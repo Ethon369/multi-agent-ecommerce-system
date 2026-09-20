@@ -72,6 +72,27 @@ class Settings(BaseSettings):
     breaker_window: int = 20
     breaker_reset_timeout_s: float = 30.0
 
+    # ── MCP ────────────────────────────────────────────────────
+    # 两个开关都【默认 false】。理由：这是一条新引入的外部依赖，
+    # 默认关闭 + 显式启用，保证现有链路零破坏（也就是零回归风险）。
+    # 打开后 MCP 挂掉也必须能降级 —— 见 mcp_wms_timeout 的注释。
+
+    # 是否注册 recommend_server 的工具（把项目能力暴露给外部 MCP Host）
+    mcp_enabled: bool = False
+
+    # 是否让库存 Agent 通过 MCP 客户端去查 WMS（而不是读 Product.stock）
+    mcp_wms_enabled: bool = False
+
+    # SQLite 库存库路径。相对路径的基准是【python/ 目录】，
+    # 因为 config/settings.py 的 env_file=".env" 也是相对 cwd 解析的。
+    mcp_wms_db_path: str = "./wms.db"
+
+    # MCP 调用超时（秒）。
+    # 必须【小于】 agent_timeout_inventory(5.0) —— 这样 MCP 先超时，
+    # 库存 Agent 还有余量走 fallback 返回 Product.stock，而不是自己先被切断。
+    # 库存查询是毫秒级操作，3 秒不给响应说明进程已异常，继续等只会拖慢主链路。
+    mcp_wms_timeout: float = 3.0
+
     model_config = {"env_file": ".env", "env_prefix": "ECOM_"}
 
 

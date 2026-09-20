@@ -23,6 +23,14 @@ tenacity>=9.0,<10
 structlog>=24.4,<27
 prometheus-client>=0.21,<1
 
+# --- MCP ---
+# v2 稳定线（`pip install mcp` 默认装到的就是 2.x）。
+# 刻意【不装】langchain-mcp-adapters：它声明 mcp<2.0.0，会把这里降级到 v1；
+# 而它的招牌功能（把 MCP 工具转成 LangChain tool schema）langchain-core 已内置
+# —— MCP 的 {"name","description","input_schema"} 形状 convert_to_openai_function
+# 原生就认（已实测）。装了等于白装，还把版本拖回去。
+mcp>=2.0,<3
+
 # --- 杂项 ---
 httpx>=0.28,<1
 python-dotenv>=1.0,<2
