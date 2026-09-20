@@ -22,7 +22,7 @@
 | **M4** | 工具层 + 组合根 | ✅ | `ToolSpec`/`ToolRegistry` + `deps.py` 组合根（修掉实例分裂 bug） | [03](stages/03-tool-registry.md) |
 | **M5** | MCP 客户端侧 | ✅ | 见下方 D1–D10 | — |
 | **M6** | 运营 Copilot | ✅ | MCP Host 端多轮 tool-calling loop + 三重护栏 | [05](stages/05-ops-copilot.md) |
-| **M7** | 延迟取证 | ✅ | p50 48,015 → **2,788 ms**（约 17 倍）；成本 4.1 倍改善 | [06](stages/06-eval.md) |
+| **M7** | 延迟取证 | ✅ | p50 48,015 → **2,522 ~ 2,788 ms**（约 17 倍）；成本 4.1 倍改善 | [06](stages/06-eval.md) |
 | **M8** | 诚实化 | ✅ | README 顶部加「哪些数字能信」；清除全部未实测数字与已删除项 | [07](stages/07-honesty.md) |
 
 图例：✅ 完成并验证 · ⚠️ 部分完成 · ❌ 未开始
