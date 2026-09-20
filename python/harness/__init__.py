@@ -12,7 +12,9 @@ harness —— Agent 运行时骨架。
 
 from __future__ import annotations
 
+from .breaker import CircuitBreaker
 from .llm import build_chat_model
+from .runtime import AgentRuntime, CircuitOpenError, get_runtime, reset_runtime
 from .trace import (
     bind,
     current_request_id,
@@ -23,11 +25,16 @@ from .trace import (
 )
 
 __all__ = [
+    "AgentRuntime",
+    "CircuitBreaker",
+    "CircuitOpenError",
     "bind",
     "build_chat_model",
     "current_request_id",
+    "get_runtime",
     "new_request_id",
     "request_context",
+    "reset_runtime",
     "scope",
     "span",
 ]

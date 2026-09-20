@@ -43,11 +43,34 @@ class Settings(BaseSettings):
     ab_test_enabled: bool = True
     ab_test_default_bucket_count: int = 100
 
-    # Agent timeouts (seconds)
+    # Agent 超时（秒）——【整个 run() 的总预算】，不是单次尝试的预算。
+    #
+    # 这些值此前是【死配置】：BaseAgent.run 里从没读过 self.timeout。
+    # 打开真超时之前先按实测重标定了一次（2026-09-20，5 次请求）：
+    #
+    #   agent              实测 min   实测 max   超时    余量
+    #   user_profile          845ms     1106ms   5.0s    4.5x
+    #   product_rec           390ms      773ms   8.0s   10.4x
+    #   marketing_copy       2411ms    11888ms  25.0s    2.1x   <- 见下
+    #   inventory             0.1ms      0.1ms   5.0s      —
+    #
+    # marketing_copy 原配 10.0s，比实测最大值 11.9s 还【小】—— 直接打开超时
+    # 会让它偶发降级。它是唯一保留推理的 Agent（创作型任务），方差因此偏大，
+    # 所以给到 25.0s（约 2 倍实测最大值）。
+    #
+    # 注意：若发生重试，最坏情况是 2 次尝试 + 退避。期限是总预算，
+    # 所以到期就切 —— 这正是"运维写在配置里的数字必须为真"的含义。
     agent_timeout_user_profile: float = 5.0
     agent_timeout_product_rec: float = 8.0
-    agent_timeout_marketing_copy: float = 10.0
+    agent_timeout_marketing_copy: float = 25.0
     agent_timeout_inventory: float = 5.0
+
+    # 熔断器（按 agent 名索引，进程级共享）
+    # 窗口内失败计数 >= 阈值即触发，而不是累计错误率 —— 后者单调不降，
+    # 会让长跑进程一旦出错就永远回不来。
+    breaker_failure_threshold: int = 5
+    breaker_window: int = 20
+    breaker_reset_timeout_s: float = 30.0
 
     model_config = {"env_file": ".env", "env_prefix": "ECOM_"}
 

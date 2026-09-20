@@ -25,7 +25,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
-from harness import new_request_id, request_context
+from harness import get_runtime, new_request_id, request_context
 from models.schemas import RecommendationRequest, RecommendationResponse
 from orchestrator.supervisor import SupervisorOrchestrator
 from orchestrator.graph import build_recommendation_graph
@@ -135,6 +135,8 @@ async def get_metrics():
     return {
         "agents": metrics_collector.get_agent_stats(),
         "business": metrics_collector.get_business_stats(),
+        # 熔断状态按 agent 名索引，进程级共享 —— 两个编排器看到的是同一份健康状态
+        "breakers": get_runtime().snapshot(),
     }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -8,6 +9,7 @@ import structlog
 from tenacity import RetryCallState, retry, stop_after_attempt, wait_exponential
 
 from harness import scope
+from harness.runtime import CircuitOpenError, get_runtime
 from models.schemas import AgentResult
 
 logger = structlog.get_logger()
@@ -44,22 +46,63 @@ class BaseAgent(ABC):
             return await self._run_once(**kwargs)
 
     async def _run_once(self, **kwargs: Any) -> AgentResult:
+        """
+        一次完整调用：熔断门 -> 取消期限 -> 重试 -> 记账。
+
+        顺序是刻意的，它就是这个 harness 层的核心工程内容：
+            熔断在最外层（按【调用】计数，且能在花掉期限之前短路）
+            期限包住重试（self.timeout 是总预算，不是单次尝试预算）
+            重试在最内层（只针对瞬时故障）
+        """
         start = time.perf_counter()
+        runtime = get_runtime()
         self._call_count += 1
 
+        # 熔断门。被拒绝时【不】调用 runtime.record —— 把"被挡住"记成失败
+        # 会让熔断器永远无法闭合。
+        if not runtime.allow(self.name):
+            breaker = runtime.breaker_for(self.name)
+            latency_ms = (time.perf_counter() - start) * 1000
+            return self._fallback(
+                latency_ms, CircuitOpenError(self.name, breaker.error_rate)
+            )
+
         try:
-            result = await self._retry_execute(**kwargs)
+            result = await asyncio.wait_for(
+                self._retry_execute(**kwargs), timeout=self.timeout
+            )
             result.latency_ms = (time.perf_counter() - start) * 1000
+            runtime.record(self.name, True)
             logger.info(
                 "agent.success",
                 agent=self.name,
                 latency_ms=round(result.latency_ms, 1),
             )
             return result
+        except TimeoutError:
+            # 3.11+ 下 asyncio.wait_for 抛的就是内置 TimeoutError（属于 Exception），
+            # 所以原有的 except Exception 本来就能接住 —— 单独一支只是为了
+            # 让超时能和"LLM 返回 500"在日志里区分开。
+            self._error_count += 1
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.error(
+                "agent.timeout",
+                agent=self.name,
+                timeout_s=self.timeout,
+                latency_ms=round(latency_ms, 1),
+            )
+            # 先记原因再记结果：runtime.record 可能触发 agent.circuit_tripped，
+            # 若反过来，日志里"跳闸"会排在"超时"前面，看起来像是无缘无故跳的。
+            runtime.record(self.name, False)
+            return self._fallback(
+                latency_ms,
+                TimeoutError(f"{self.name} exceeded {self.timeout}s budget"),
+            )
         except Exception as exc:
             self._error_count += 1
             latency_ms = (time.perf_counter() - start) * 1000
             logger.error("agent.failed", agent=self.name, error=str(exc))
+            runtime.record(self.name, False)
             return self._fallback(latency_ms, exc)
 
     async def _retry_execute(self, **kwargs: Any) -> AgentResult:
@@ -107,6 +150,14 @@ class BaseAgent(ABC):
 
     @property
     def error_rate(self) -> float:
-        if self._call_count == 0:
-            return 0.0
-        return self._error_count / self._call_count
+        """
+        委托给共享熔断器的【滑动窗口】错误率。
+
+        原实现是累计比率（_error_count / _call_count），单调不降：
+        长跑进程里一旦出错就永远回不到低位，拿去驱动熔断会导致
+        熔断打开后无法闭合。而且它此前从没被任何地方调用过 —— 是个死属性。
+
+        保留 _call_count / _error_count 只是为了兼容既有读取方，
+        它们不再是健康状态的来源。
+        """
+        return get_runtime().breaker_for(self.name).error_rate

@@ -31,6 +31,25 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_agent_runtime():
+    """
+    每个测试前后丢弃 AgentRuntime 单例。
+
+    AgentRuntime 是进程级的，熔断状态会跨测试累积 —— 一个测试打出的
+    熔断会让后面所有测试拿到 circuit_open，结果不可复现。
+    本项目已经在 structlog contextvars 上踩过一次同类问题，
+    所以这里直接用 autouse 兜住，不指望每个测试自己记得清。
+    """
+    from harness import reset_runtime
+
+    reset_runtime()
+    try:
+        yield
+    finally:
+        reset_runtime()
+
+
 @pytest.fixture
 def captured() -> list[dict[str, Any]]:
     """
