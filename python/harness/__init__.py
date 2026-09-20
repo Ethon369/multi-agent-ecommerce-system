@@ -13,7 +13,8 @@ harness —— Agent 运行时骨架。
 from __future__ import annotations
 
 from .breaker import CircuitBreaker
-from .llm import build_chat_model
+from .llm import MeteredChatOpenAI, build_chat_model
+from .pricing import ModelPrice, PricingTable
 from .runtime import AgentRuntime, CircuitOpenError, get_runtime, reset_runtime
 from .trace import (
     bind,
@@ -22,17 +23,24 @@ from .trace import (
     request_context,
     scope,
 )
+from .usage import UsageAccumulator, current_usage, usage_scope
 
 __all__ = [
     "AgentRuntime",
     "CircuitBreaker",
     "CircuitOpenError",
+    "MeteredChatOpenAI",
+    "ModelPrice",
+    "PricingTable",
+    "UsageAccumulator",
     "bind",
     "build_chat_model",
     "current_request_id",
+    "current_usage",
     "get_runtime",
     "new_request_id",
     "request_context",
     "reset_runtime",
     "scope",
+    "usage_scope",
 ]

@@ -36,11 +36,83 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
+from langchain_core.messages import BaseMessage
+from langchain_core.outputs import ChatResult
 from langchain_openai import ChatOpenAI
 
 from config import get_settings
+from .usage import record_usage
 
 logger = structlog.get_logger()
+
+
+class MeteredChatOpenAI(ChatOpenAI):
+    """
+    会记账的 ChatOpenAI。
+
+        为什么包装模型，而不是在每个调用点记账
+        ────────────────────────────────────
+        三个 Agent 里各有一处 `llm.ainvoke(...)`。如果在三处都手写记账，
+        将来加第 4 个 Agent 时【一定会漏】—— 而且漏了不会有任何报错，
+        只是成本数字悄悄少了一块。
+
+        包装模型之后，"记账"变成了模型自带的行为：
+        只要 Agent 从 build_chat_model() 拿客户端，就自动被记账。
+
+        实现上的一个坑
+        ──────────────
+        ChatOpenAI 是 pydantic 模型，不能把一个"有状态的累加器"当成字段塞进来
+        （pydantic 会对字段做校验/序列化，而且它也不该跟着模型走 ——
+        同一个模型实例可能被多个请求复用）。
+
+        所以累加器放在 contextvar 里，记账时按【调用时刻】去取当前请求的账本。
+        见 harness/usage.py。
+
+        对 bind_tools 的兼容
+        ───────────────────
+        bind_tools() 返回的是一个 RunnableBinding，但它底层仍会走到
+        本类的 _agenerate —— 所以将来 Copilot 用工具调用时，记账照样生效。
+    """
+
+    agent_name: str = "unknown"
+    """哪个 Agent 在用这个客户端。由 build_chat_model 注入。"""
+
+    def _meter(self, result: ChatResult, messages: list[BaseMessage]) -> None:
+        try:
+            generations = getattr(result, "generations", None) or []
+            if not generations:
+                return
+            message = generations[0].message
+            usage = getattr(message, "usage_metadata", None)
+
+            if usage:
+                record_usage(self.agent_name, self.model_name, usage)
+                return
+
+            # API 没返回 usage（部分 OpenAI 兼容网关会省略）。
+            # 用 tiktoken 估算，并标记 estimated=True ——
+            # 让下游知道这个数字是估的，不能当实测引用。
+            input_tokens = self.get_num_tokens_from_messages(messages)
+            output_tokens = self.get_num_tokens(str(message.content or ""))
+            record_usage(
+                self.agent_name,
+                self.model_name,
+                {"input_tokens": input_tokens, "output_tokens": output_tokens},
+                estimated=True,
+            )
+        except Exception as exc:
+            # 记账失败绝不能影响主流程 —— 成本统计是观测，不是业务
+            logger.warning("llm.metering_failed", agent=self.agent_name, error=str(exc))
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        self._meter(result, messages)
+        return result
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        result = await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        self._meter(result, messages)
+        return result
 
 
 def _thinking_exempt() -> set[str]:
@@ -83,6 +155,10 @@ def build_chat_model(
         "model": settings.llm_model,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        # 记账靠这个字段认领调用来源。放在这里而不是让调用方传，
+        # 是为了配合"Agent 名同时决定要不要关推理"这一件事 ——
+        # 两者都需要知道"是谁在调"，那就只传一次。
+        "agent_name": agent_name,
     }
     if extra_body:
         kwargs["extra_body"] = extra_body
@@ -93,4 +169,4 @@ def build_chat_model(
         model=settings.llm_model,
         thinking_disabled=disable_thinking,
     )
-    return ChatOpenAI(**kwargs)
+    return MeteredChatOpenAI(**kwargs)

@@ -26,7 +26,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
 from harness import get_runtime, new_request_id, request_context
-from harness.deps import get_ab_engine, get_metrics_collector, get_supervisor
+from harness.deps import get_ab_engine, get_metrics_collector, get_pricing, get_supervisor
+from harness.pricing import PRICING_AS_OF, PRICING_SOURCE
 from models.schemas import RecommendationRequest, RecommendationResponse
 from orchestrator.graph import build_recommendation_graph
 
@@ -137,6 +138,14 @@ async def get_metrics():
         "business": metrics_collector.get_business_stats(),
         # 熔断状态按 agent 名索引，进程级共享 —— 两个编排器看到的是同一份健康状态
         "breakers": get_runtime().snapshot(),
+        # LLM 用量累计（进程启动以来）。cost_usd 为 null 表示有模型查不到单价，
+        # 不是"免费"。
+        "llm": metrics_collector.get_llm_stats(),
+        "pricing": {
+            "as_of": PRICING_AS_OF,
+            "source": PRICING_SOURCE,
+            "fingerprint": get_pricing().fingerprint(),
+        },
     }
 
 
@@ -154,6 +163,11 @@ def _collect_metrics(response: RecommendationResponse):
             success=result.success,
             latency_ms=result.latency_ms,
         )
+    # 注意：这里读的是 response.harness（顶层字段），不是 agent_results 里的东西。
+    # agent_results 会因为声明类型是基类而被 pydantic 截断子类字段，
+    # 但 harness 是顶层声明的，能完整读到。
+    if response.harness:
+        metrics_collector.record_llm_usage(response.harness.usage.model_dump())
 
 
 if __name__ == "__main__":

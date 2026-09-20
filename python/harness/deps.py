@@ -36,6 +36,8 @@ if TYPE_CHECKING:
     from services.ab_test import ABTestEngine
     from services.metrics import MetricsCollector
 
+    from .pricing import PricingTable
+
 
 @lru_cache(maxsize=1)
 def get_ab_engine() -> "ABTestEngine":
@@ -49,6 +51,20 @@ def get_metrics_collector() -> "MetricsCollector":
     from services.metrics import MetricsCollector
 
     return MetricsCollector()
+
+
+@lru_cache(maxsize=1)
+def get_pricing() -> "PricingTable":
+    """
+    价格表单例。
+
+    只构造一次的理由：价格表支持从环境变量 / JSON 文件加载，
+    每次都读盘没必要；而且评测报告里要记它的【指纹】——
+    如果每次构造出来的指纹都可能不同，"优化前 vs 优化后"的成本对比就是假的。
+    """
+    from .pricing import PricingTable
+
+    return PricingTable.from_env()
 
 
 @lru_cache(maxsize=1)
@@ -88,3 +104,4 @@ def reset_deps() -> None:
     get_supervisor.cache_clear()
     get_ab_engine.cache_clear()
     get_metrics_collector.cache_clear()
+    get_pricing.cache_clear()

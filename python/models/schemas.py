@@ -83,12 +83,47 @@ class InventoryResult(AgentResult):
     purchase_limits: dict[str, int] = Field(default_factory=dict)
 
 
+class HarnessUsageReport(BaseModel):
+    """一次请求的 token 与成本账本。"""
+
+    llm_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    # cost_usd 为 None 时表示【查不到该模型的单价】，不是"免费"。
+    # 这是有意的：一个看起来精确但其实是编的数字，比没有数字更危险。
+    cost_usd: float | None = None
+    cost_known: bool = False
+    estimated: bool = False
+    """True 表示至少一次用量是估算的（API 没返回 usage），不能当实测引用。"""
+    by_agent: dict[str, dict[str, int]] = Field(default_factory=dict)
+
+
+class HarnessReport(BaseModel):
+    """
+    运行时保障层的自述报告。
+
+    ⚠️ 刻意做成 RecommendationResponse 的【顶层字段】，而不是塞进 agent_results。
+    原因见下面 agent_results 的注释 —— 放进去会被静默截断。
+    """
+
+    usage: HarnessUsageReport = Field(default_factory=HarnessUsageReport)
+    agents: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    breakers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
 class RecommendationResponse(BaseModel):
     request_id: str
     user_id: str
     products: list[Product] = Field(default_factory=list)
     marketing_copies: list[dict[str, str]] = Field(default_factory=list)
     experiment_group: str = "control"
+    # ⚠️ 这里声明的是基类 AgentResult，pydantic 会按【声明类型】序列化，
+    # 所以子类独有的字段（profile / products / copies / low_stock_alerts /
+    # available_products / purchase_limits）会被静默截断，HTTP 响应里看不到。
+    # 想暴露新信息请加到【顶层】（比如下面的 harness），不要塞进这里。
     agent_results: dict[str, AgentResult] = Field(default_factory=dict)
+    harness: HarnessReport | None = None
     total_latency_ms: float = 0.0
     timestamp: datetime = Field(default_factory=datetime.now)
