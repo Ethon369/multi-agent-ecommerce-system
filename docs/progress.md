@@ -187,7 +187,15 @@ MCP 关  15/15 可用   source=fallback
 
 ---
 
-### 6.1 返回商品数少于 `num_items`（2026-09-20 实测发现）
+### 6.1 返回商品数少于 `num_items`（2026-09-20 实测发现 → **已修复，见阶段 A**）
+
+> ✅ **已修复**。修复方案：Phase 2 复用 Phase 1 的候选集（`candidates=raw_products`）。
+> 端到端实测从"要 5 个给 2-3 个"恢复为稳定 5 个。
+> 详细原理与代码见 [stages/01-fix-candidate-set.md](stages/01-fix-candidate-set.md)。
+>
+> 以下保留原始记录，作为"这个 bug 长什么样"的档案。
+
+
 
 **症状**：请求 `num_items=5`，稳定只返回 2–3 个商品，**没有任何报错或告警**。
 

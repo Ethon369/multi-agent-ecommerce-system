@@ -86,9 +86,16 @@ class SupervisorOrchestrator:
             raw_products: list[Product] = getattr(rec_result, "products", [])
 
             # Phase 2: parallel — re-rank with profile + inventory check + copy generation
+            #
+            # 关键：把 Phase 1 召回的那批商品【原样传给重排】。
+            # 库存 Agent 检查的就是 raw_products，所以重排必须在同一个集合里挑，
+            # 否则重排挑中的商品不在检查过的集合里，会被下面的过滤【静默刷掉】，
+            # 最终返回数量少于 num_items（实测要 5 个稳定只给 2-3 个）。
+            # 顺带也去掉了一次多余的重复召回。
             rerank_task = self.product_rec_agent.run(
                 user_profile=user_profile,
                 num_items=request.num_items,
+                candidates=raw_products,
             )
             inventory_task = self.inventory_agent.run(products=raw_products)
 

@@ -73,8 +73,18 @@ class ProductRecAgent(BaseAgent):
     async def _execute(self, **kwargs: Any) -> ProductRecResult:
         user_profile: UserProfile | None = kwargs.get("user_profile")
         num_items: int = kwargs.get("num_items", 10)
-
-        candidates = await self._recall(user_profile, num_items * 3)
+        # 允许调用方把【已经召回、且已经被库存检查过】的候选集传进来。
+        #
+        # 为什么需要这个参数（这是一个真实 bug 的修复，详见 docs/progress.md 6.1）：
+        #   编排器里 Phase 1 先召回一批，库存 Agent 检查的就是这一批；
+        #   而 Phase 2 原先会【再召回一次】，两次召回的集合可能不同。
+        #   结果：重排挑了 A 集合里的商品，却被按 B 集合的检查结果过滤掉，
+        #   最终返回数量【静默】少于 num_items（实测要 5 个稳定只给 2-3 个）。
+        #
+        # 修复思路：召回 → 检查 → 排序 → 过滤，这四步必须作用在【同一个集合】上。
+        # 传进来就用它；没传（单独调用本 Agent）就自己召回，保持原行为。
+        provided: list[Product] | None = kwargs.get("candidates")
+        candidates = provided if provided else await self._recall(user_profile, num_items * 3)
         ranked_ids = await self._rerank(user_profile, candidates, num_items)
 
         id_to_product = {p.product_id: p for p in candidates}

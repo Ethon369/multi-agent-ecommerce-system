@@ -95,9 +95,12 @@ async def parallel_phase1(state: PipelineState) -> PipelineState:
 
 
 async def rerank_node(state: PipelineState) -> PipelineState:
+    # 与 supervisor.py 同理：必须复用 Phase 1 召回、且库存已检查过的候选集。
+    # 否则重排挑中的商品可能不在检查过的集合里，被 filter_node 静默刷掉。
     result = await get_agents()["product_rec"].run(
         user_profile=state.get("user_profile"),
         num_items=state.get("num_items", 10),
+        candidates=state.get("raw_products", []),
     )
     state["ranked_products"] = getattr(result, "products", state.get("raw_products", []))
     state["agent_results"]["rerank"] = result
