@@ -11,21 +11,24 @@
 
 ## 一、计划里程碑（M0–M8）
 
-| # | 内容 | 状态 | 关键产出 / 证据 |
-|---|---|---|---|
-| **M0** | 基线固化 | ✅ | 基线 p50 = **48,015 ms**；`pytest` 进依赖；Java/Go 删除已提交 |
-| **M0b** | tool-calling 探针 | ✅ | 模型支持原生 tool calling；**langchain-core 原生认 MCP schema，适配器代码量为 0** |
-| **M1** | 请求级追踪 | ✅ | `request_id` 贯穿；`agent.retry` 事件上线（并据此推翻我一个错误结论） |
-| **M1.5** | 评测运行器 | ❌ **未做** | 计划里排在 M1 之后，被 M2 的阻塞问题插队 |
-| **M2** | 真超时 + 熔断 | ✅ | 故障注入 4/4 HTTP 200；熔断第 3 次请求 **0ms** 短路 |
-| **M3** | token / 成本账本 | ⚠️ **部分** | `build_chat_model` 工厂已做（提前）；**`MeteredChatOpenAI` 记账未做** |
-| **M4** | 工具层 + 组合根 | ⚠️ **部分** | `harness/deps.py` 组合根已做；**`ToolSpec`/`ToolRegistry` 未做** |
-| **M5** | MCP 客户端侧 | ✅ | 见下方 D1–D10 |
-| **M6** | 运营 Copilot | ❌ **未做** | 依赖 M4 的工具层 |
-| **M7** | 评测扩充 + 延迟取证 | ⚠️ **部分** | 延迟优化已拿到 10.4 倍实测；**评测集未建** |
-| **M8** | 诚实化（README/docs） | ❌ **未做** | 已知 README 仍有 CTR +15%、P99<2s 等未实测数字 |
+| # | 内容 | 状态 | 关键产出 / 证据 | 阶段文档 |
+|---|---|---|---|---|
+| **M0** | 基线固化 | ✅ | 基线 p50 = **48,015 ms**；`pytest` 进依赖；Java/Go 删除已提交 | — |
+| **M0b** | tool-calling 探针 | ✅ | 模型支持原生 tool calling；**langchain-core 原生认 MCP schema，适配器代码量为 0** | — |
+| **M1** | 请求级追踪 | ✅ | `request_id` 贯穿；`agent.retry` 事件上线（并据此推翻我一个错误结论） | — |
+| **M1.5** | 评测运行器 | ✅ | 10 条 golden set + 确定性门禁 + `--baseline` 对比 | [06](stages/06-eval.md) |
+| **M2** | 真超时 + 熔断 | ✅ | 故障注入 4/4 HTTP 200；熔断第 3 次请求 **0ms** 短路 | — |
+| **M3** | token / 成本账本 | ✅ | 按 Agent 分摊；实测定位出文案占 89% 成本 | [02](stages/02-token-accounting.md) |
+| **M4** | 工具层 + 组合根 | ✅ | `ToolSpec`/`ToolRegistry` + `deps.py` 组合根（修掉实例分裂 bug） | [03](stages/03-tool-registry.md) |
+| **M5** | MCP 客户端侧 | ✅ | 见下方 D1–D10 | — |
+| **M6** | 运营 Copilot | ✅ | MCP Host 端多轮 tool-calling loop + 三重护栏 | [05](stages/05-ops-copilot.md) |
+| **M7** | 延迟取证 | ✅ | p50 48,015 → **2,788 ms**（约 17 倍）；成本 4.1 倍改善 | [06](stages/06-eval.md) |
+| **M8** | 诚实化 | ✅ | README 顶部加「哪些数字能信」；清除全部未实测数字与已删除项 | [07](stages/07-honesty.md) |
 
 图例：✅ 完成并验证 · ⚠️ 部分完成 · ❌ 未开始
+
+**另外还做了一件计划里没有的事**：修掉了一个实测发现的静默正确性 bug
+（返回商品数长期少于 `num_items`）—— 见 [阶段 01](stages/01-fix-candidate-set.md)。
 
 ---
 

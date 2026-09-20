@@ -132,7 +132,10 @@ agent_results: dict[str, UserProfileResult | ProductRecResult
    ```
 3. **`/api/v1/experiments/{experiment_id}/outcome` 的 `group`、`success` 是 query 参数**，不是 JSON body（`main.py:136`），用 curl 传 body 会 422。
 4. **`main.py` 里 `reload=True` 只适合开发**，自建部署要去掉（它会额外起一个 reloader 进程）。
-5. **README 的性能数字不可信**：README 称"目标 P99 < 2000 ms"、"延迟优化到 2s"，实测接真实 LLM 后全链路 **15.8 ~ 16.6 s**（profile 7.97s + rerank 4.13s + copy 3.74s，三阶段串行累加）。**面试或简历里只写自己测出来的数**。
+5. **README 的性能数字不可信**：README 称"目标 P99 < 2000 ms"、"延迟优化到 2s"，
+   而实测接真实 LLM 后全链路是 **15.8 ~ 16.6 s**。
+   > 后续：二次开发时把延迟优化到 **p50 2,788 ms / p95 3,997 ms**（约 17 倍），
+   > 但**仍然不是 2 秒**。README 现已修正，并新增了「哪些数字能信」一节。（profile 7.97s + rerank 4.13s + copy 3.74s，三阶段串行累加）。**面试或简历里只写自己测出来的数**。
 6. **`requirements.txt` 缺 pytest**，`tests/` 默认跑不了（只有一个 `test_ab_test.py`）。
 7. **docker-compose 里的 Redis / Milvus / MySQL 当前代码都没用到**，只想跑通不必起容器。
 8. **三语言实现共享同一套架构设计，但代码是各自独立的**，改 Python 版不会同步到 Java / Go。

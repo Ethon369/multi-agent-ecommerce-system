@@ -1,11 +1,57 @@
 # 🛒 多Agent电商推荐与营销系统
 
-> **面向小白的企业级 AI Agent 项目** — 从零理解 Multi-Agent 架构，配套三语言代码 + 八股文 + 简历模板 + STAR面试话术，找工作全流程覆盖。
+> **面向小白的企业级 AI Agent 项目** — 从零理解 Multi-Agent 架构，配套八股文 + 简历模板 + STAR面试话术，找工作全流程覆盖。
 
-[![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](python/)
-[![Java](https://img.shields.io/badge/Java-17%2B-orange?logo=java)](java/)
-[![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](go/)
+[![Python](https://img.shields.io/badge/Python-3.14-blue?logo=python)](python/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
+---
+
+## ⚠️ 先读这一段：本文档里的数字哪些能信
+
+这份 README 是分两个阶段写的。**早期写下的那批数字多数没有实测支撑**，
+后来做二次开发时逐个核对过。为了不让你在面试里被问穿，这里先说清楚。
+
+### ✅ 可信的（有实测、可复现）
+
+出处：`eval_results/` 下的评测报告，用 `python -m eval.runner` 可重新生成。
+
+| 指标 | 实测值 |
+|---|---|
+| 全链路延迟 p50 | **2,788 ms**（优化前 48,015 ms，约 17 倍） |
+| 延迟 p95 | **3,997 ms** |
+| 单次推荐成本 | **$0.000608** |
+| 评测通过率 | **10/10** |
+| 单元测试 | **144 个** |
+| 故障注入 | 注入超时后 **4/4 请求仍是 HTTP 200** |
+| 熔断短路 | 打开后 **0 ms** 返回 |
+
+### ❌ 不可信的（早期写的目标值或设想，与代码不符）
+
+| 说法 | 实际情况 |
+|---|---|
+| "CTR 提升 15%、文案点击率提升 23%" | **没有任何数据支撑**。A/B 引擎的 `config` 甚至从未被读取 —— 实验目前不影响任何行为 |
+| "P99 < 2s" | 从未达到。实测 p95 是 3,997 ms |
+| "三语言实现（Python/Java/Go）" | **Java/Go 实现已删除**，只保留 Python |
+| "Redis Sorted Set 实时特征" | `services/feature_store.py` 代码完整（117 行），但**从未被实例化** |
+| "Milvus 向量检索" | `pymilvus` 在依赖里，但**代码里从未 import** |
+| "MySQL 实时库存" | 实际是 **SQLite + MCP**（这是二次开发时才真正接上的） |
+| "重试最多 3 次" | 实际是 **2 次尝试**（即只重试 1 次）—— 参数原名 `max_retries` 却表示总尝试次数，已改名为 `max_attempts` |
+| "熔断器：错误率 > 50% 自动熔断，返回缓存结果" | 二次开发**才真正实现**，且策略是"滑动窗口内失败计数 ≥ 5"，不是错误率 |
+
+> **整段二次开发的经过、每一步的实测数字和设计取舍**，见
+> [docs/progress.md](docs/progress.md)（进度总览）与 [docs/stages/](docs/stages/)（分阶段技术文档）。
+>
+> **harness 与 MCP 具体是哪几行代码**，见 [docs/harness-mcp-walkthrough.md](docs/harness-mcp-walkthrough.md)。
+
+### 🔧 经过二次开发后新增的能力
+
+| 能力 | 说明 |
+|---|---|
+| **MCP 三端** | Server（自建 2 个）+ Client（消费 WMS）+ Host（运营 Copilot 多轮工具调用） |
+| **Agent 运行时保障** | 真超时、滑动窗口熔断、请求级 trace 贯穿、两级降级 |
+| **可观测性** | 每个 Agent 的 token 与成本分摊、熔断状态、工具清单 |
+| **评测闭环** | 10 条 golden set + 确定性门禁 + 非门禁 LLM 裁判 + 前后对比 |
 
 ---
 
@@ -14,15 +60,14 @@
 1. [这个项目是什么？](#-这个项目是什么)
 2. [系统架构（看图秒懂）](#-系统架构看图秒懂)
 3. [四大核心 Agent 详解](#-四大核心-agent-详解)
-4. [三语言实现对比](#-三语言实现对比)
-5. [关键代码展示](#-关键代码展示)
-6. [快速上手运行](#-快速上手运行)
-7. [API 接口文档](#-api-接口文档)
-8. [项目文件结构](#-项目文件结构)
-9. [面试资料索引](#-面试资料索引)
-10. [面试八股文精选](#-面试八股文精选10题)
-11. [简历写法（直接复制）](#-简历写法直接复制)
-12. [参考资料与致谢](#-参考资料与致谢)
+4. [关键代码展示](#-关键代码展示)
+5. [快速上手运行](#-快速上手运行)
+6. [API 接口文档](#-api-接口文档)
+7. [项目文件结构](#-项目文件结构)
+8. [面试资料索引](#-面试资料索引)
+9. [面试八股文精选](#-面试八股文精选10题)
+10. [简历写法（直接复制）](#-简历写法直接复制)
+11. [参考资料与致谢](#-参考资料与致谢)
 
 ---
 
@@ -44,7 +89,7 @@
 
 ### 技术关键词（面试常考）
 
-`Multi-Agent` · `Supervisor模式` · `LangGraph` · `asyncio并行` · `Redis Feature Store` · `A/B Testing` · `Thompson Sampling` · `RAG` · `ReAct` · `MiniMax LLM`
+`Multi-Agent` · `Supervisor模式` · `LangGraph` · `asyncio并行` · `MCP（Server/Client/Host）` · `A/B Testing` · `Thompson Sampling` · `熔断与降级` · `token 成本核算` · `DeepSeek LLM`
 
 ---
 
@@ -68,7 +113,7 @@
 │  │   用户画像 Agent      │    │   商品召回 Agent      │            │
 │  │  user_profile_agent  │    │  product_rec_agent   │            │
 │  │  ──────────────────  │    │  ────────────────── │            │
-│  │  Redis → 实时行为特征 │    │  协同过滤+向量检索召回 │            │
+│  │  行为数据(内置兜底)   │    │  多路召回(规则排序)     │            │
 │  │  RFM模型 → 用户分群   │    │  返回候选商品列表     │            │
 │  └──────────┬───────────┘    └──────────┬──────────┘            │
 │             │                           │                         │
@@ -77,7 +122,7 @@
 │  │   LLM重排 Agent      │    │   库存决策 Agent      │            │
 │  │  (product_rec再次调用)│    │   inventory_agent    │            │
 │  │  ──────────────────  │    │  ────────────────── │            │
-│  │  用户画像 × 商品属性  │    │  MySQL → 实时库存查询 │            │
+│  │  用户画像 × 商品属性  │    │  MCP → 实时库存查询   │            │
 │  │  LLM精排，返回TopN   │    │  过滤缺货，输出限购策略│            │
 │  └──────────┬───────────┘    └──────────┬──────────┘            │
 │             │                           │                         │
@@ -145,8 +190,12 @@ Supervisor 模式                     Handoffs 模式
 **核心逻辑（简化）**：
 
 ```python
-# Step 1：从 Redis Feature Store 获取实时行为特征
-behavior = await feature_store.get_user_features(user_id)
+# Step 1：获取用户行为数据
+# ⚠️ 注意：services/feature_store.py 里有一套完整的 Redis 实现（117 行，
+#    含 1h/24h/7d 滑动窗口 + RFM），但【从未被实例化过】——
+#    user_profile_agent.py 的 self.feature_store 一直是 None，走的是内置兜底数据。
+#    想真正启用它需要注入 FeatureStore 实例（这是一个已知缺口，不是已完成能力）。
+behavior = await self._collect_behavior(user_id, context)   # 目前走内置兜底
 # 返回: {"clicks_1h": 12, "purchases_7d": 3, "categories": ["手机", "耳机"]}
 
 # Step 2：调用 LLM 分析，输出结构化画像
@@ -176,7 +225,7 @@ return UserProfile(user_id=user_id, segments=["active"], rfm_score=...)
 ```
 多路召回策略
   ├── 协同过滤（买了A也买了B）
-  ├── 向量检索（Milvus，语义相似商品）
+  ├── 向量检索（未实现：pymilvus 在依赖里但代码从未 import）
   ├── 热度策略（最近7天热卖）
   └── 新品策略（上架30天内）
         │
@@ -225,7 +274,7 @@ BANNED_WORDS = ["最好", "第一", "最便宜", "绝对", "100%"]
 
 ```python
 # 输入: 推荐商品列表 [P001, P002, P003, ...]
-# 查询 MySQL/WMS 实时库存
+# 通过 MCP 查询实时库存（WMS Server，SQLite 支撑）
 # 输出:
 {
     "available_products": ["P001", "P003"],   # 有货商品
@@ -240,17 +289,15 @@ BANNED_WORDS = ["最好", "第一", "最便宜", "绝对", "100%"]
 
 ---
 
-## 🌐 三语言实现对比
+## 🌐 关于"多语言实现"
 
-| 维度 | Python | Java | Go |
-|------|--------|------|----|
-| 框架 | [LangGraph](https://github.com/langchain-ai/langgraph) + FastAPI | [Spring AI Alibaba](https://github.com/alibaba/spring-ai-alibaba) + Spring Boot 3 | LangChainGo + Gin |
-| 并行方式 | `asyncio.gather()` | `CompletableFuture.allOf()` | `goroutine` + `sync.WaitGroup` |
-| 推荐语言 | ✅ 入门首选，代码量最少 | ✅ 企业级Java岗 | ✅ 高并发/云原生岗 |
-| 代码位置 | [`python/`](python/) | [`java/`](java/) | [`go/`](go/) |
-| 启动命令 | `python main.py` | `mvn spring-boot:run` | `go run cmd/main.go` |
-
----
+> **本项目的 Java 与 Go 实现已在二次开发时删除。**
+>
+> 删除理由：它们是同样逻辑的平行实现，既没有 MCP 也没有任何运行时保障层，
+> 对 AI 应用岗不能加分，反而会在面试中分散注意力 ——
+> 并需要额外解释"为什么 Java/Go 侧没有这些能力"。
+>
+> 现在只有 Python 一份实现，代码更少、更深，也更好讲。
 
 ## 💻 关键代码展示
 
@@ -297,7 +344,7 @@ class SupervisorOrchestrator:
             products=final_products,
             marketing_copies=copies,
             experiment_group=experiment.get("group", "control"),
-            total_latency_ms=total_latency,  # 目标 P99 < 2000ms
+            total_latency_ms=total_latency,  # 实测 p50 约 2788ms（不是"目标 2s"）
         )
 ```
 
@@ -384,31 +431,41 @@ class BaseAgent(ABC):
 
 ---
 
-### Go 版：goroutine 并行（高并发）
+### 运行时保障层（二次开发新增）
 
-**文件**：[`go/orchestrator/supervisor.go`](go/orchestrator/supervisor.go)
+**文件**：[`python/agents/base_agent.py`](python/agents/base_agent.py)
 
-```go
-func (s *Supervisor) Recommend(ctx context.Context, req *model.RecommendRequest) (*model.RecommendResponse, error) {
-    var wg sync.WaitGroup
-    
-    // goroutine 并行：用户画像 + 商品召回
-    wg.Add(2)
-    go func() {
-        defer wg.Done()
-        profile, _ = s.UserProfileAgent.Run(ctx, req.UserID)
-    }()
-    go func() {
-        defer wg.Done()
-        products, _ = s.ProductRecAgent.Run(ctx, req.NumItems*2)
-    }()
-    wg.Wait()  // 等两个 goroutine 都完成
-    
-    // 串行：文案生成
-    copies, _ = s.MarketingCopyAgent.Run(ctx, profile, products)
-    return &model.RecommendResponse{Products: products, Copies: copies}, nil
-}
+> ⚠️ **上面那段 BaseAgent 代码是早期写的示意，参数名与实际不符**
+> （实际是 `max_attempts`，且含义为总尝试次数而非重试次数）。
+> 二次开发后 `run()` 的真实结构是"熔断门 → 超时 → 重试 → 记账 → 降级"：
+
+```python
+async def _run_once(self, **kwargs) -> AgentResult:
+    runtime = get_runtime()
+
+    # ① 熔断门：连续失败达阈值就先别打这个下游了
+    if not runtime.allow(self.name):
+        return self._fallback(latency_ms, CircuitOpenError(self.name))
+
+    try:
+        # ② 期限：self.timeout 是【整个 run() 的总预算】，不是单次尝试预算
+        result = await asyncio.wait_for(
+            self._retry_execute(**kwargs),   # ③ 内含 tenacity 指数退避重试
+            timeout=self.timeout,
+        )
+        runtime.record(self.name, True)      # ④ 记账，喂给熔断窗口
+        return result
+    except TimeoutError:
+        logger.error("agent.timeout", ...)   # ⑤ 超时单独记事件，与"模型报错"区分开
+        runtime.record(self.name, False)
+        return self._fallback(latency_ms, TimeoutError(...))
 ```
+
+> 💡 **为什么这个顺序不能改**：熔断必须在重试**外层**。
+> 放内层的话，每个 attempt 都会重新求值一次门禁（重试风暴照样穿透），
+> 而且统计的是"尝试失败数"而非"调用结果数"，把失败信号放大数倍。
+>
+> 完整原理见 [docs/harness-mcp-walkthrough.md](docs/harness-mcp-walkthrough.md)。
 
 ---
 
@@ -498,21 +555,23 @@ curl -X POST http://localhost:8080/api/v1/recommend \
 
 ---
 
-### Docker 一键部署（含 Redis + MySQL 等依赖）
+### Docker 部署
 
 ```bash
 # 在项目根目录运行
 docker-compose up -d
-
-# 等待所有服务启动（约30秒）
 docker-compose ps
 
 # 服务地址
 # Python API:  http://localhost:8000
-# Java API:    http://localhost:8080
-# Redis:       localhost:6379
-# MySQL:       localhost:3306
 ```
+
+> ⚠️ **关于 `docker-compose.yml` 里的 Redis / Milvus / MySQL：**
+> 那三个服务目前**代码里都没有连**（`redis` / `pymilvus` / `sqlalchemy`
+> 在依赖里但从未 import）。启起来不影响功能，但也不产生任何作用。
+>
+> 库存数据现在走的是 **SQLite + MCP**，不依赖 MySQL
+> （见 [docs/mcp-integration.md](docs/mcp-integration.md)）。
 
 ---
 
@@ -520,13 +579,42 @@ docker-compose ps
 
 ### 接口列表
 
-| 方法 | 路径 | 说明 | 语言 |
-|------|------|------|------|
-| `POST` | `/api/v1/recommend` | 核心推荐接口 | Python / Java / Go |
-| `POST` | `/api/v1/recommend/graph` | LangGraph 状态图推荐 | Python only |
-| `GET` | `/api/v1/experiments` | 查看 A/B 实验状态 | Python / Java |
-| `GET` | `/api/v1/metrics` | 系统监控指标 | Python only |
-| `GET` | `/health` | 健康检查 | 全部 |
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/v1/recommend` | 核心推荐接口（确定性链路） |
+| `POST` | `/api/v1/recommend/graph` | 同一件事的 LangGraph 版 |
+| `POST` | `/api/v1/copilot` | ★ **运营助手**：模型自主决定调用哪些工具 |
+| `GET` | `/api/v1/experiments` | A/B 实验状态 |
+| `GET` | `/api/v1/metrics` | 指标：Agent + 熔断 + token/成本 + 工具清单 |
+| `POST` | `/api/v1/experiments/{id}/outcome` | 记录实验结果 |
+| `GET` | `/health` | 健康检查 |
+
+**`/api/v1/recommend` 的响应里有 `harness` 段**（顶层），含：
+
+```json
+"harness": {
+  "usage": { "llm_calls": 3, "input_tokens": 871, "output_tokens": 2327,
+             "cost_usd": 0.003054, "cost_known": true,
+             "by_agent": { "marketing_copy": {...} } },
+  "agents": { "user_profile": {"success": true, "breaker_state": "closed"} },
+  "breakers": { "user_profile": {"state": "closed", "failures_in_window": 0} }
+}
+```
+
+> `cost_usd` 为 `null` 表示**查不到该模型的单价**，不是"免费" ——
+> 一个看起来精确但其实是编的成本数字，比没有数字更危险。
+
+**`/api/v1/copilot` 示例**：
+
+```json
+POST /api/v1/copilot
+{"message": "哪些商品快断货了？"}
+
+// 返回里带工具调用轨迹，能看到模型自己调了什么：
+{"reply": "...", "stop_reason": "completed", "steps": 2,
+ "tool_calls": [{"step":1,"tool":"wms__list_low_stock","ok":true,"latency_ms":1150},
+                {"step":2,"tool":"list_products","ok":true,"latency_ms":0}]}
+```
 
 ### 请求示例
 
@@ -583,61 +671,88 @@ Content-Type: application/json
 
 ## 📁 项目文件结构
 
+> ⚠️ 这一节已按**当前实际**的文件树重写。旧版本里列的 `java/`、`go/` 目录已删除。
+
 ```
 multi-agent-ecommerce-system/
 │
-├── README.md                          # 📄 本文件（项目总览）
-├── plan.md                            # 📋 完整项目计划（从调研到上线）
-├── docker-compose.yml                 # 🐳 一键启动所有服务
+├── README.md                    # 本文件
+├── CLAUDE.md                    # 给 AI agent 的说明（含已知陷阱）
+├── docker-compose.yml
+├── eval_results/                # 评测报告（gitignore，含 git SHA 与实测数字）
 │
-├── docs/                              # 📚 面试全套文档
-│   ├── interview-guide.md             # 🎯 面试指南（八股文30题 + STAR法话术）
-│   ├── resume-template.md             # 📝 简历模板（应届 + 社招两版）
-│   ├── architecture.md                # 🏗 架构设计详解（含数据流图）
-│   └── code-walkthrough.md            # 🔍 代码逐行讲解（面向小白）
+├── docs/
+│   ├── progress.md              # ★ 进度总览：里程碑 / 交付物 / 实测数字 / 已知问题
+│   ├── harness-mcp-walkthrough.md  # ★ harness 与 MCP 具体是哪几行代码
+│   ├── mcp-integration.md       # ★ MCP 使用文档（怎么配、怎么验）
+│   ├── stages/                  # ★ 分阶段技术文档（每个阶段做什么、为什么）
+│   │   ├── 01-fix-candidate-set.md
+│   │   ├── 02-token-accounting.md
+│   │   ├── 03-tool-registry.md
+│   │   ├── 04-mcp-server-side.md
+│   │   ├── 05-ops-copilot.md
+│   │   └── 06-eval.md
+│   ├── mcp-integration-prd.md   # MCP 部分的原始设计（含被否决方案的论证）
+│   ├── interview-guide.md       # 面试指南（八股文 + STAR 话术）
+│   ├── resume-template.md
+│   ├── architecture.md          # 架构设计详解
+│   ├── code-walkthrough.md      # 原有代码逐行讲解
+│   └── extension-guide.md       # 二次开发指南（预留钩子 + 难度阶梯）
 │
-├── python/                            # 🐍 Python 实现（推荐入门）
-│   ├── main.py                        # FastAPI 服务入口
-│   ├── requirements.txt               # 依赖列表
-│   ├── .env.example                   # 环境变量模板
-│   ├── agents/                        # 4 个 Agent 实现
-│   │   ├── base_agent.py              # 基类：重试/超时/降级
-│   │   ├── user_profile_agent.py      # 用户画像 Agent
-│   │   ├── product_rec_agent.py       # 商品推荐 Agent
-│   │   ├── marketing_copy_agent.py    # 营销文案 Agent
-│   │   └── inventory_agent.py         # 库存决策 Agent
-│   ├── orchestrator/
-│   │   ├── supervisor.py              # ⭐ Supervisor 并行编排（核心）
-│   │   └── graph.py                   # LangGraph 状态图
-│   ├── services/
-│   │   ├── ab_test.py                 # A/B 测试引擎（Thompson Sampling）
-│   │   ├── feature_store.py           # Redis 实时特征服务
-│   │   └── metrics.py                 # Prometheus 监控指标
-│   ├── models/schemas.py              # Pydantic 数据模型
-│   ├── config/settings.py             # 配置管理
-│   └── tests/                         # 单元测试
-│
-├── java/                              # ☕ Java 实现（企业级 Spring 生态）
-│   ├── pom.xml                        # Maven 依赖（Spring AI Alibaba）
-│   └── src/main/java/com/ecommerce/
-│       ├── MultiAgentApplication.java # Spring Boot 启动入口
-│       ├── agent/                     # 4 个 Agent（Spring Bean）
-│       ├── orchestrator/              # CompletableFuture 并行编排
-│       ├── service/                   # A/B 测试服务
-│       ├── config/                    # LLM 配置 + REST Controller
-│       └── model/                     # 数据模型（Request/Response）
-│
-└── go/                                # 🐹 Go 实现（高并发云原生）
-    ├── go.mod                         # 模块依赖
-    ├── cmd/main.go                    # 程序入口
-    ├── agent/                         # 4 个 Agent（interface + impl）
-    ├── orchestrator/supervisor.go     # goroutine + WaitGroup 并行编排
-    ├── handler/api.go                 # Gin HTTP 路由
-    ├── service/ab_test.go             # A/B 测试服务
-    └── model/types.go                 # 数据结构定义
+└── python/                      # 唯一的实现（Java/Go 已删除）
+    ├── main.py                  # FastAPI 入口：推荐 / 实验 / 指标 / Copilot
+    ├── requirements.txt
+    ├── .env.example
+    │
+    ├── agents/                  # 4 个 Agent
+    │   ├── base_agent.py        # ★ 运行时保障：熔断门→超时→重试→降级
+    │   ├── user_profile_agent.py
+    │   ├── product_rec_agent.py
+    │   ├── marketing_copy_agent.py
+    │   └── inventory_agent.py   # ★ MCP 客户端的唯一接线点
+    │
+    ├── harness/                 # ★ 运行时骨架（二次开发新增）
+    │   ├── trace.py             #   请求级 trace（structlog contextvars）
+    │   ├── breaker.py           #   熔断器（纯逻辑，零依赖，最厚的单测在这）
+    │   ├── runtime.py           #   按 agent 名索引的共享熔断状态 + 调用顺序
+    │   ├── llm.py               #   客户端工厂 + 会记账的 MeteredChatOpenAI
+    │   ├── usage.py             #   token / 成本账本（contextvar 并发安全）
+    │   ├── pricing.py           #   价格表（可覆盖，查不到返回 None 不猜）
+    │   ├── deps.py              #   组合根：全进程一份实例
+    │   └── tools/               #   统一工具层（内置函数与 MCP 工具同构）
+    │       ├── spec.py          #     ToolSpec / ToolResult
+    │       ├── registry.py      #     分发 + 超时/重试/降级
+    │       ├── builtin.py       #     内置工具
+    │       └── mcp_source.py    #     MCP 工具 → ToolSpec（零转换）
+    │
+    ├── copilot/                 # ★ 运营 Copilot（MCP Host 角色）
+    │   ├── agent.py             #   多轮 tool-calling loop + 三重护栏
+    │   └── router.py            #   POST /api/v1/copilot
+    │
+    ├── mcp_servers/             # ★ 两个 MCP Server
+    │   ├── wms_server.py        #   库存服务（SQLite，4 工具 + 1 resource）
+    │   ├── recommend_server.py  #   把本项目能力暴露出去（4 工具）
+    │   └── init_wms_db.py       #   建表 + 种子（★ 种子故意与本地假数据不一致）
+    │
+    ├── orchestrator/
+    │   ├── supervisor.py        #   asyncio 并行编排
+    │   └── graph.py             #   LangGraph 版同一件事
+    │
+    ├── services/
+    │   ├── ab_test.py           #   A/B 引擎（分桶 + Thompson）
+    │   ├── mcp_client.py        #   ★ MCP 短连接客户端（永不抛异常给调用方）
+    │   ├── metrics.py           #   指标 + token/成本累计
+    │   └── feature_store.py     #   ⚠️ Redis 特征实现完整，但【从未被实例化】
+    │
+    ├── eval/                    # ★ 评测闭环
+    │   ├── cases.jsonl          #   10 条 golden set
+    │   ├── runner.py            #   确定性断言 + 报告 + --baseline 对比
+    │   └── judge.py             #   非门禁 LLM 裁判
+    │
+    ├── models/schemas.py
+    ├── config/settings.py
+    └── tests/                   # 144 个测试，全部离线
 ```
-
----
 
 ## 📚 面试资料索引
 
@@ -743,7 +858,9 @@ multi-agent-ecommerce-system/
 
 > 三层保障：
 > 1. **超时控制**：`asyncio.wait_for(coro, timeout=5)` — 每个 Agent 独立超时，不阻塞整体
-> 2. **指数退避重试**：失败后等 1s → 2s → 4s 重试，共 3 次
+> 2. **指数退避重试**：失败后等 0.5s → 1s → 2s（上限 4s），共 **2 次尝试**（即只重试 1 次）。
+>    ⚠️ 参数原名 `max_retries=2` 却表示"总尝试次数"，是个会误导人的命名，已改名为 `max_attempts`。
+>    另外默认【不重试】更多次：一个超时 3 秒的只读工具重试两次，会在一条本就 16 秒的链路上再烧 6 秒，换来的还是同一个答案。
 > 3. **降级（Fallback）**：全部重试失败后，返回"说得过去的默认结果"（如热门商品列表），保证整个系统不崩溃
 
 ---
@@ -779,13 +896,29 @@ multi-agent-ecommerce-system/
 
 ---
 
-### Q10：系统延迟怎么优化到 P99 < 2s？
+### Q10：系统延迟是怎么优化的？
 
-> 四个优化手段：
-> 1. **并行化**：Phase1 和 Phase2 各两个 Agent 并行，节省约 50% 时间
-> 2. **超时熔断**：单 Agent 超时不等待，返回降级结果，避免长尾拖累
-> 3. **Redis 缓存**：用户画像热点数据缓存，命中率 > 80% 的情况下延迟从 200ms → 5ms
-> 4. **LLM 精简**：Prompt 控制在 500 Token 以内，减少 LLM 推理时间
+> **实测数据**（不是目标值）：全链路 p50 从 **48,015 ms 降到 2,788 ms（约 17 倍）**。
+>
+> 三步，每一步都有先测量再动手：
+>
+> **第一步：先让重试可见。** 我一度以为某次 63 秒的请求是重试造成的，
+> 于是加了 `agent.retry` 事件去验证 —— **结果一次都没触发**，我的判断是错的。
+> 真相是模型单次调用真的花了 54 秒。
+>
+> **第二步：定位到真正的瓶颈。** 重复测量同一 prompt 发现：
+> `input_tokens` 每次精确等于 612（与网络无关）、
+> **延迟与推理 token 数的相关系数 r = 0.997**、
+> 98.5% 的输出 token 是推理 token。
+> 逐个试关闭手段：`max_tokens=64` 反而更慢（该参数被模型厂商忽略）、
+> `reasoning_effort=low` 无效、提示词要求直接作答省 40%，
+> 而 `thinking={"type":"disabled"}` 让单次调用从 9,198ms 降到 981ms。
+>
+> **第三步：并行化本来就有，省下的是串行部分。** 库存检查与重排本来就并行，
+> 所以关掉推理后新瓶颈变成 Phase 3 的串行文案生成。
+
+> ⚠️ 关于"P99 < 2s"：**那是早期写的目标值，从未达到过。**
+> 实测 p95 是 3,997 ms。不要引用 2 秒这个数字。
 
 👉 **更多30题详见** [docs/interview-guide.md](docs/interview-guide.md)
 
@@ -793,25 +926,42 @@ multi-agent-ecommerce-system/
 
 ## 📋 简历写法（直接复制）
 
+> ⚠️ **下面每个数字都能在仓库里找到出处**（`eval_results/` 下的评测报告）。
+> 旧版本里写的"CTR 提升 15%、文案点击率提升 23%"**没有数据支撑，已删除** ——
+> 面试官问"你怎么测的 A/B"会非常被动。
+
 ```
-多Agent电商推荐与营销系统 | 个人项目 | 2026.01 - 2026.04
+多Agent电商推荐与营销系统 | 个人项目 | 2026.09 - 2026.10
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• 设计并实现基于 Supervisor 模式的多 Agent 协同架构，含用户画像、商品推荐、
-  营销文案、库存决策 4 个专业 Agent，采用并行分发+聚合的编排模式
+• 【Agent 运行时】为 4-Agent 系统实现运行时保障层：contextvars 贯穿请求级 trace、
+  asyncio.wait_for 真超时、滑动窗口熔断与两级降级。
+  故障注入验证：注入 0.3s 超时后前两次 311ms 降级、第 3 次起 0ms 短路，
+  四次请求全部 HTTP 200 且商品文案照常返回
 
-• 基于 Redis Sorted Set 实现实时用户特征工程（RFM 模型+行为序列），
-  特征更新延迟 < 100ms，支持 1h/24h/7d 多时间窗口滑动计算
+• 【MCP 三端】基于 MCP Python SDK v2 实现 Server + Client + Host 三端：
+  自建库存 Server（SQLite，4 工具 + 1 resource）与推荐 Server（暴露 4 个工具）；
+  库存 Agent 作为 Client 消费 WMS；并实现多轮 tool-calling loop 的运营 Copilot 作为 Host。
+  MCP 不可用时自动降级并在响应中标注 source=fallback
 
-• 集成 LLM 实现个性化营销文案生成，基于用户画像动态切换 5 套 Prompt 模板，
-  文案合规率 100%（广告法敏感词自动过滤）
+• 【协议层判断】评估现成 SQLite MCP Server 后主动否决（官方已归档、存在 CWE-89、
+  通用 SQL 入口与库存查询的确定性要求语义不匹配），自建确定性工具契约
 
-• 设计流量分桶 + Thompson Sampling A/B 测试引擎，支持 Agent/模型/Prompt
-  三层实验，推荐 CTR 提升 15%，文案点击率提升 23%
+• 【性能与成本】通过测量定位到延迟与推理 token 数相关系数 0.997，
+  关闭确定型任务的推理后全链路 p50 从 48,015ms 降至 2,788ms（约 17 倍），
+  单次推荐成本从 $0.0025 降至 $0.0006（4.1 倍）
 
-• 提供 Python(LangGraph) / Java(Spring AI Alibaba) / Go(goroutine) 三语言实现
+• 【评测闭环】构建 10 条 golden set + 确定性断言门禁 + 非门禁 LLM 裁判，
+  报告带 git SHA / 模型 / 价格表指纹保证前后可比。
+  基于该闭环完成一次结论反转：按实测数据推翻了自己此前"文案保留推理"的判断
 
-技术栈：LangGraph · Spring AI Alibaba · Go · Redis · Milvus · FastAPI · Docker
+技术栈：MCP · LangGraph · FastAPI · SQLite · Redis · structlog · tenacity · Pytest
 ```
+
+**为什么这版比旧版强**：
+① 旧版写"CTR 提升 15%"，面试官问"怎么测的"会立刻穿帮 —— 那两个数字没有任何数据支撑；
+② 新版**主动展示了两处"我否决/推翻了自己"**（否决现成 MCP Server、推翻自己的推理决策），
+   这比任何正向指标都更能证明工程判断力；
+③ 每个数字都能指向 `eval_results/` 里的一份可复现报告。
 
 ---
 
