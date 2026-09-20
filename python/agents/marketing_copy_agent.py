@@ -12,9 +12,9 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 
 from config import get_settings
+from harness import build_chat_model
 from models.schemas import (
     MarketingCopyResult,
     Product,
@@ -64,13 +64,10 @@ class MarketingCopyAgent(BaseAgent):
             name="marketing_copy",
             timeout=settings.agent_timeout_marketing_copy,
         )
-        self.llm = ChatOpenAI(
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            temperature=0.9,
-            max_tokens=2048,
-        )
+        # 唯一【保留推理】的 Agent：创作型任务，思考可能真的换来更好的文案。
+        # 这由 settings.llm_thinking_exempt_agents 控制（默认含 marketing_copy），
+        # 所以想验证"关掉推理文案会不会变差"只需改配置，不用动代码。
+        self.llm = build_chat_model("marketing_copy", temperature=0.9, max_tokens=2048)
 
     async def _execute(self, **kwargs: Any) -> MarketingCopyResult:
         user_profile: UserProfile | None = kwargs.get("user_profile")

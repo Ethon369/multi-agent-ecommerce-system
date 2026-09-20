@@ -13,6 +13,20 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_max_tokens: int = 2048
 
+    # 推理开关（provider 相关，目前只对 DeepSeek 系生效）。
+    #
+    # 实测背景（2026-09-20，deepseek-flash @ api.deepseek.com）：
+    #   - 该模型默认【开启推理】，output token 里 98.5% 是 reasoning token
+    #   - 延迟与 reasoning token 数的相关系数 r = 0.997 —— 延迟几乎完全由"想多久"决定
+    #   - max_tokens 参数被【完全忽略】：设成 64 反而生成了 2797 个 token
+    #   - 对 rerank 这类确定性任务，推理只贡献延迟不贡献质量：
+    #     关掉后 9198ms -> 981ms（-89%），返回的商品 ID 逐项一致
+    #
+    # 所以默认关掉。但创作型任务（营销文案）保留推理 —— 见下面的例外名单。
+    llm_disable_thinking: bool = True
+    # 例外名单：逗号分隔的 agent 名，这些保留推理。
+    llm_thinking_exempt_agents: str = "marketing_copy"
+
     # Redis
     redis_url: str = "redis://localhost:6379/0"
     feature_ttl_seconds: int = 86400

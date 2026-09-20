@@ -12,9 +12,9 @@ import random
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 
 from config import get_settings
+from harness import build_chat_model
 from models.schemas import AgentResult, Product, ProductRecResult, UserProfile
 
 from .base_agent import BaseAgent
@@ -64,13 +64,10 @@ class ProductRecAgent(BaseAgent):
             name="product_rec",
             timeout=settings.agent_timeout_product_rec,
         )
-        self.llm = ChatOpenAI(
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            temperature=0.3,
-            max_tokens=512,
-        )
+        # 这个 Agent 是关推理收益最大的地方：它只做"从候选里挑 N 个 ID"，
+        # 实测开推理时单次要 8.3s~37.8s（4.5 倍方差，r=0.997 由思考量决定），
+        # 关掉后 9198ms -> 981ms，且返回的 ID 逐项一致。
+        self.llm = build_chat_model("product_rec", temperature=0.3, max_tokens=512)
         self.vector_store: Any = None  # injected in Phase 2
 
     async def _execute(self, **kwargs: Any) -> ProductRecResult:

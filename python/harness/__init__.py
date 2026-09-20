@@ -12,6 +12,7 @@ harness —— Agent 运行时骨架。
 
 from __future__ import annotations
 
+from .llm import build_chat_model
 from .trace import (
     bind,
     current_request_id,
@@ -23,6 +24,7 @@ from .trace import (
 
 __all__ = [
     "bind",
+    "build_chat_model",
     "current_request_id",
     "new_request_id",
     "request_context",

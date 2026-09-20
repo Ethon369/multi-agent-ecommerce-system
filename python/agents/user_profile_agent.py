@@ -11,9 +11,9 @@ import json
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 
 from config import get_settings
+from harness import build_chat_model
 from models.schemas import (
     AgentResult,
     UserProfile,
@@ -44,13 +44,10 @@ class UserProfileAgent(BaseAgent):
             name="user_profile",
             timeout=settings.agent_timeout_user_profile,
         )
-        self.llm = ChatOpenAI(
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            temperature=0.3,
-            max_tokens=1024,
-        )
+        # 走工厂而不是直接 ChatOpenAI：provider 级调优参数（目前是关推理）
+        # 集中在 harness/llm.py 一处。这是「抽几个字段」的确定性任务，
+        # 推理只贡献延迟不贡献质量 —— 实测量级见 harness/llm.py 顶部。
+        self.llm = build_chat_model("user_profile", temperature=0.3, max_tokens=1024)
         self.feature_store: Any = None  # injected in Phase 2
 
     async def _execute(self, **kwargs: Any) -> UserProfileResult:
