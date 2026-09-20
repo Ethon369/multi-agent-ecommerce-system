@@ -72,6 +72,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 运营 Copilot（MCP Host 角色）：由模型自主决定调用哪些工具。
+# 与主推荐接口共享熔断/指标/账本/工具注册表，但不共享会话状态。
+from copilot.router import router as copilot_router  # noqa: E402
+
+app.include_router(copilot_router)
+
 
 @app.get("/health")
 async def health():
