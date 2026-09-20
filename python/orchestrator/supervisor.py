@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 from typing import Any
 
 import structlog
@@ -32,6 +31,7 @@ from agents import (
     ProductRecAgent,
     UserProfileAgent,
 )
+from harness import new_request_id, request_context
 from models.schemas import (
     Product,
     RecommendationRequest,
@@ -54,7 +54,7 @@ class SupervisorOrchestrator:
         self.ab_engine = ab_engine or ABTestEngine()
 
     async def recommend(self, request: RecommendationRequest) -> RecommendationResponse:
-        request_id = str(uuid.uuid4())
+        request_id = new_request_id()
         start = time.perf_counter()
 
         logger.info(
@@ -64,48 +64,55 @@ class SupervisorOrchestrator:
             scene=request.scene,
         )
 
-        experiment = self.ab_engine.assign(request.user_id)
+        # 整个流水线跑在请求上下文里。
+        # 关键：这个 with 必须在下面每一个 asyncio.gather 【之前】进入 ——
+        # asyncio 任务在【创建时】复制上下文，所以在 gather 之前绑定的
+        # request_id 会被两个 Phase 的子任务自动继承；事后再绑就晚了。
+        with request_context(request_id, user_id=request.user_id, scene=request.scene):
+            experiment = self.ab_engine.assign(request.user_id)
 
-        # Phase 1: parallel — user profile + product recall
-        profile_result, rec_result = await asyncio.gather(
-            self.user_profile_agent.run(
-                user_id=request.user_id,
-                context=request.context,
-            ),
-            self.product_rec_agent.run(
-                user_profile=None,
-                num_items=request.num_items * 2,
-            ),
-        )
+            # Phase 1: parallel — user profile + product recall
+            profile_result, rec_result = await asyncio.gather(
+                self.user_profile_agent.run(
+                    user_id=request.user_id,
+                    context=request.context,
+                ),
+                self.product_rec_agent.run(
+                    user_profile=None,
+                    num_items=request.num_items * 2,
+                ),
+            )
 
-        user_profile: UserProfile | None = getattr(profile_result, "profile", None)
-        raw_products: list[Product] = getattr(rec_result, "products", [])
+            user_profile: UserProfile | None = getattr(profile_result, "profile", None)
+            raw_products: list[Product] = getattr(rec_result, "products", [])
 
-        # Phase 2: parallel — re-rank with profile + inventory check + copy generation
-        rerank_task = self.product_rec_agent.run(
-            user_profile=user_profile,
-            num_items=request.num_items,
-        )
-        inventory_task = self.inventory_agent.run(products=raw_products)
+            # Phase 2: parallel — re-rank with profile + inventory check + copy generation
+            rerank_task = self.product_rec_agent.run(
+                user_profile=user_profile,
+                num_items=request.num_items,
+            )
+            inventory_task = self.inventory_agent.run(products=raw_products)
 
-        rerank_result, inventory_result = await asyncio.gather(
-            rerank_task, inventory_task
-        )
+            rerank_result, inventory_result = await asyncio.gather(
+                rerank_task, inventory_task
+            )
 
-        ranked_products: list[Product] = getattr(rerank_result, "products", raw_products)
+            ranked_products: list[Product] = getattr(
+                rerank_result, "products", raw_products
+            )
 
-        available_ids = set(getattr(inventory_result, "available_products", []))
-        final_products = [p for p in ranked_products if p.product_id in available_ids]
-        if not final_products:
-            final_products = ranked_products[:request.num_items]
-        final_products = final_products[:request.num_items]
+            available_ids = set(getattr(inventory_result, "available_products", []))
+            final_products = [p for p in ranked_products if p.product_id in available_ids]
+            if not final_products:
+                final_products = ranked_products[:request.num_items]
+            final_products = final_products[:request.num_items]
 
-        # Phase 3: marketing copy generation with final product list
-        copy_result = await self.marketing_copy_agent.run(
-            user_profile=user_profile,
-            products=final_products,
-        )
-        copies = getattr(copy_result, "copies", [])
+            # Phase 3: marketing copy generation with final product list
+            copy_result = await self.marketing_copy_agent.run(
+                user_profile=user_profile,
+                products=final_products,
+            )
+            copies = getattr(copy_result, "copies", [])
 
         total_latency = (time.perf_counter() - start) * 1000
 

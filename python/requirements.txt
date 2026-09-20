@@ -1,17 +1,33 @@
-langgraph>=0.4.0
-langchain>=0.3.0
-langchain-openai>=0.3.0
-langchain-community>=0.3.0
-fastapi>=0.115.0
-uvicorn>=0.34.0
-redis>=5.2.0
-pymilvus>=2.5.0
-sqlalchemy>=2.0.0
-pydantic>=2.10.0
-pydantic-settings>=2.7.0
-httpx>=0.28.0
-numpy>=2.0.0
-python-dotenv>=1.0.0
-tenacity>=9.0.0
-structlog>=24.4.0
-prometheus-client>=0.21.0
+# --- LLM / Agent ---
+# 地板对齐实际解析结果：原 `langchain>=0.3.0` 落后两个大版本，
+# 换台机器全新安装会解析到 API 不兼容的版本（本项目实际跑在 langchain 1.x 上）。
+langgraph>=1.2,<2
+langchain>=1.4,<2
+langchain-openai>=1.6,<2
+langchain-community>=0.4,<1
+
+# --- Web / API ---
+fastapi>=0.115,<1
+uvicorn>=0.34,<1
+
+# --- Data ---
+redis>=5.2,<7
+pymilvus>=2.5,<3
+sqlalchemy>=2.0,<3
+pydantic>=2.10,<3
+pydantic-settings>=2.7,<3
+numpy>=2.0,<3
+
+# --- 可靠性 / 可观测 ---
+tenacity>=9.0,<10
+structlog>=24.4,<27
+prometheus-client>=0.21,<1
+
+# --- 杂项 ---
+httpx>=0.28,<1
+python-dotenv>=1.0,<2
+
+# --- 测试 ---
+# 原本缺失，导致 tests/ 在全新安装后根本跑不起来。
+# 不需要 pytest-asyncio：anyio 自带 pytest 插件（已验证 anyio 4.15.1）。
+pytest>=8.0,<10

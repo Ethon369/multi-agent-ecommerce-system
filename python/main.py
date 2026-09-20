@@ -25,6 +25,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
+from harness import new_request_id, request_context
 from models.schemas import RecommendationRequest, RecommendationResponse
 from orchestrator.supervisor import SupervisorOrchestrator
 from orchestrator.graph import build_recommendation_graph
@@ -83,13 +84,18 @@ async def recommend_via_graph(request: RecommendationRequest):
     """使用LangGraph状态图进行推荐 (展示LangGraph能力)"""
     if not rec_graph:
         return {"error": "Graph not initialized"}
+    request_id = new_request_id()
     state = {
+        "request_id": request_id,
         "user_id": request.user_id,
         "scene": request.scene,
         "num_items": request.num_items,
         "context": request.context,
     }
-    result = await rec_graph.ainvoke(state)
+    # 必须在 ainvoke 【之前】进入上下文：LangGraph 的节点跑在各自的子任务里，
+    # 上下文是在任务创建时复制的。事后再绑，节点里的日志就带不上 request_id。
+    with request_context(request_id, user_id=request.user_id, scene=request.scene):
+        result = await rec_graph.ainvoke(state)
     return {
         "request_id": result.get("request_id"),
         "user_id": result.get("user_id"),

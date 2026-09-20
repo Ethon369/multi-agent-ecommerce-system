@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -24,6 +23,7 @@ from agents import (
     ProductRecAgent,
     UserProfileAgent,
 )
+from harness import new_request_id
 from models.schemas import Product, UserProfile
 from services.ab_test import ABTestEngine
 
@@ -56,7 +56,9 @@ ab_engine = ABTestEngine()
 
 
 async def init_node(state: PipelineState) -> PipelineState:
-    state["request_id"] = str(uuid.uuid4())
+    # setdefault 而不是直接赋值：路由层已经在上下文里绑好了一个 request_id，
+    # 直接覆盖会让 REST 层和 graph 层的日志关联不上（同一个请求两个 id）。
+    state.setdefault("request_id", new_request_id())
     state["_start_time"] = time.perf_counter()
     state["agent_results"] = {}
     exp = ab_engine.assign(state["user_id"])
