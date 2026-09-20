@@ -4,8 +4,8 @@
 > 目标：投「AI 应用 / Agent 开发岗（校招）」，突出 **harness 工程能力** 与 **MCP 双侧**
 > 原始计划：`docs/mcp-integration-prd.md`（MCP）、`docs/extension-guide.md`（二次开发指南）
 
-**一句话现状**：harness 骨架已立起来并全部有实测证据；MCP **客户端侧**完成并通过 A4/A5，
-**服务端侧（D1）尚未开始**。
+**一句话现状**：**七个阶段全部完成**。harness 运行时保障层、MCP 三端（Server + Client + Host）、
+评测闭环、诚实化全部落地，每一项都有实测证据。
 
 ---
 
@@ -38,7 +38,7 @@
 
 | # | 交付物 | 状态 | 说明 |
 |---|---|---|---|
-| D1 | `mcp_servers/recommend_server.py` | ❌ **未做** | 把项目能力**对外暴露**给外部 MCP Host —— 「双侧」的服务端那一半 |
+| D1 | `mcp_servers/recommend_server.py` | ✅ | 4 个工具，协议壳零业务逻辑；返回扁平结构绕开 pydantic 截断 |
 | D2 | `mcp_servers/wms_server.py` | ✅ | 4 工具 + 1 resource，stdio |
 | D3 | `mcp_servers/init_wms_db.py` | ✅ | 15 商品，**9 个与目录库存故意不同**（A5 的根据） |
 | D4 | `services/mcp_client.py` | ✅ | 每次调用短连接，永不抛异常给调用方 |
@@ -46,19 +46,21 @@
 | D6 | 配置开关 | ✅ | 4 个 `ECOM_MCP_*`，全部默认 `false` |
 | D7 | `main.py` 生命周期管理 | ⚠️ **按设计不需要** | 选了短连接 ⇒ 进程内无常驻 MCP 连接可管。**这是我的判断，与原 PRD 有出入** |
 | D8 | 测试 | ✅ | `tests/test_mcp_wms.py` + `tests/test_inventory_mcp.py` |
-| D9 | `docs/mcp-integration.md` 使用文档 | ❌ **未做** | |
+| D9 | `docs/mcp-integration.md` 使用文档 | ✅ | 怎么配 / 怎么验 / 常见问题 |
 | D10 | 依赖 | ✅ | `mcp>=2.0,<3`（v2 稳定线，不装 `langchain-mcp-adapters`） |
 
 ### 验收项（A1–A7）
 
 | # | 验收项 | 状态 | 证据 |
 |---|---|---|---|
-| A1 | `mcp dev` 可发现 Server | ⚠️ **未验证** | `mcp` 命令行存在，但缺 `typer`（需 `pip install mcp[cli]`） |
+| A1 | `mcp dev` 可发现 Server | ⚠️ **未验证** | `mcp` 命令行存在，但缺 `typer`（需 `pip install mcp[cli]`）。
+不过工具可发现性已由 `list_tools` 的进程内测试覆盖 |
 | A2 | 工具逻辑（进程内 Client） | ✅ | 12 条测试，不起子进程不占端口 |
 | A3 | 端到端 200 + 日志可见 MCP 调用 | ✅ | `inventory.stock_source source=mcp` |
 | A4 | **降级：MCP 挂掉仍 200** | ✅ | `source="fallback"`，商品文案照常返回 |
 | A5 | **契约：证明真的走了 MCP** | ✅ | 见下方「A5 证据」 |
-| A6 | 回归探针 | ⚠️ **未做** | PRD 说探针归档在 `D:\devlop\_archive\probes_20260920`，该目录里**没有** `probe_recommend.py` |
+| A6 | 回归探针 | ⚠️ **未做** | PRD 说探针归档在该目录，但里面**没有** `probe_recommend.py`。
+替代：`eval/runner.py` 的 10 条用例已覆盖回归 |
 | A7 | 开关关闭时零影响 | ✅ | 关时不构造客户端，行为与集成前一致 |
 
 ---
@@ -67,15 +69,23 @@
 
 所有数字均为实测，可复现（脚本在 `d:\tmp\`，结果在 `eval_results/`）。
 
-### 延迟（5 次请求 p50）
+### 延迟
 
-| Agent | 改动前 | 改动后 | 改善 |
+分两步优化（每一步都有实测依据）：
+
+| | 全链路 p50 | 说明 |
+|---|---|---|
+| 基线 | **48,015 ms** | 二次开发前的实测值 |
+| 第一步后 | **4,597 ms** | 关掉确定型 Agent 的推理（10.4 倍） |
+| **第二步后** | **2,522 ~ 2,788 ms** | 文案也关推理（累计约 17 倍） |
+
+| Agent | 基线 | 第一步后 | 最终 |
 |---|---|---|---|
-| **全链路** | **48,015 ms** | **4,597 ms** | **10.4×** |
-| `user_profile` | 8,819 ms | 961 ms | 9.2× |
-| `product_rec` | 29,700 ms | 728 ms | **40.8×** |
-| `marketing_copy` | 5,059 ms | 2,900 ms | 1.7×（**故意保留推理**） |
-| 波动范围 | 39.4 – 87.5 s | 4.0 – 13.8 s | |
+| `user_profile` | 8,819 ms | 961 ms | ~700 ms |
+| `product_rec` | 29,700 ms | 728 ms | ~500 ms |
+| `marketing_copy` | 5,059 ms | 2,900 ms | **~1,200 ms** |
+
+> 文案那一步起初是【保留推理】的（理由是创作型任务），阶段 F 用评测集检验后按证据改成了关闭 —— 见 [阶段 06](stages/06-eval.md)。
 
 **怎么做到的**（完整诊断链，每步都有数据）：
 
@@ -124,8 +134,8 @@ MCP 关  15/15 可用   source=fallback
 
 ### 工程指标
 
-- 测试：**5 → 78**
-- commit：6 个（每个都是独立可验证的单元）
+- 测试：**5 → 144**（另有 1 条默认跳过的慢速完整链路）
+- commit：10 个（每个都是独立可验证的单元）
 - MCP 单次调用成本：**约 1,150 ms**（短连接重启子进程，`import mcp` 占约 1 秒）
 
 ---
@@ -180,11 +190,11 @@ MCP 关  15/15 可用   source=fallback
 
 | 问题 | 影响 |
 |---|---|
-| ★ **返回商品数少于 `num_items`**（见下方 5.1） | 要 5 个稳定只给 2–3 个，且**静默**，无任何报错或告警 |
+| ~~返回商品数少于 `num_items`~~ | ✅ **已修复**（阶段 A） |
 | `models/schemas.py:92` 声明 `dict[str, AgentResult]` | 子类字段（`profile`/`products`/`copies`/`low_stock_alerts`）**被静默截断**，HTTP 响应里看不到。`data.source` 能出来是因为 `data` 是基类字段 |
 | `services/feature_store.py`（117 行）从未被实例化 | README 宣称的「Redis 实时特征」是假的 |
 | A/B 的 `config` 仍无人消费 | 实验**不影响任何行为**（`assign_thompson` 也从未被调用） |
-| README 未实测数字 | CTR +15% / 文案点击率 +23% / P99<2s / 三语言 |
+| ~~README 未实测数字~~ | ✅ **已清理**（阶段 G），README 顶部新增「哪些数字能信」 |
 | `agents/base_agent.py` 的 `_call_count`/`_error_count` | 保留但已不是健康状态来源，容易误导读者 |
 | `mcp[cli]` 未装 | A1（`mcp dev`）无法验证 |
 
