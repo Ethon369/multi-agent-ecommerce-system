@@ -64,9 +64,10 @@ class MarketingCopyAgent(BaseAgent):
             name="marketing_copy",
             timeout=settings.agent_timeout_marketing_copy,
         )
-        # 唯一【保留推理】的 Agent：创作型任务，思考可能真的换来更好的文案。
-        # 这由 settings.llm_thinking_exempt_agents 控制（默认含 marketing_copy），
-        # 所以想验证"关掉推理文案会不会变差"只需改配置，不用动代码。
+        # 曾经是唯一【保留推理】的 Agent（理由：创作型任务，思考可能换来更好文案）。
+        # 建好评测集后实测发现：关掉推理能省 2.9 倍延迟、4.1 倍成本，
+        # 而 LLM 裁判评出的质量差异在 n=3 下不可测（详见 settings.py 的注释）。
+        # 所以默认已改为不保留。想恢复：ECOM_LLM_THINKING_EXEMPT_AGENTS=marketing_copy
         self.llm = build_chat_model("marketing_copy", temperature=0.9, max_tokens=2048)
 
     async def _execute(self, **kwargs: Any) -> MarketingCopyResult:

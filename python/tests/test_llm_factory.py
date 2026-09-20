@@ -24,12 +24,34 @@ def test_deterministic_agent_has_thinking_disabled() -> None:
     assert _extra_body(model) == {"thinking": {"type": "disabled"}}
 
 
-def test_creative_agent_keeps_thinking() -> None:
-    """营销文案是创作型任务，保留推理 —— 由配置的例外名单控制。"""
+def test_exempt_list_keeps_thinking(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    测【机制】而不是具体默认值：
+
+    名单里的 Agent 必须保留推理。默认值本身（当前为空）会随证据变化，
+    但"名单生效"这件事不能变 —— 所以这里显式配置后再断言。
+
+    （这条测试原先断言的是 marketing_copy 默认保留推理。阶段 F 建好评测集后，
+      实测显示关掉推理能省 2.9 倍延迟/4.1 倍成本、而质量差异不可测，
+      于是默认改成了不保留。测试随之改成测机制。）
+    """
+    from config import get_settings
+
+    monkeypatch.setattr(get_settings(), "llm_thinking_exempt_agents", "marketing_copy")
+
     model = build_chat_model("marketing_copy", temperature=0.9, max_tokens=2048)
-    assert "thinking" not in _extra_body(model), (
-        "marketing_copy 在 llm_thinking_exempt_agents 名单里，不该被关推理"
-    )
+    assert "thinking" not in _extra_body(model), "在豁免名单里的 Agent 不该被关推理"
+
+
+def test_agent_outside_exempt_list_gets_thinking_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from config import get_settings
+
+    monkeypatch.setattr(get_settings(), "llm_thinking_exempt_agents", "some_other_agent")
+
+    model = build_chat_model("marketing_copy", temperature=0.9, max_tokens=2048)
+    assert _extra_body(model) == {"thinking": {"type": "disabled"}}
 
 
 def test_explicit_override_wins() -> None:
