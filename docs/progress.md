@@ -143,10 +143,41 @@ MCP 关  15/15 可用   source=fallback
 
 ---
 
-## 五、已知问题（未修）
+## 五、承重 vs 可删（审计）
+
+用 `grep` 统计 harness 每个导出项在**生产代码**（排除定义处与测试）里的真实引用次数。
+问题很直接：**这些代码是真的在承重，还是我写多了？**
+
+| 模块 | 生产引用 | 判定 | 它换来的是什么 |
+|---|---|---|---|
+| `build_chat_model` | 6 | **承重** | 10.4 倍延迟优化的载体 |
+| `get_agents` / `get_ab_engine` / `get_supervisor` / `get_metrics_collector` | 8 / 6 / 2 / 2 | **承重** | 修掉跨路径实例分裂（熔断与实验结论不同步） |
+| `request_context` / `scope` / `bind` / `new_request_id` | 4 / 4 / 3 / 6 | **承重** | request_id 贯穿全部 Agent 日志 |
+| `get_runtime` | 5 | **承重** | 熔断生效 |
+| `CircuitBreaker` / `AgentRuntime` | 0 直接（经 `get_runtime` 间接） | **承重** | 同上；纯逻辑，最厚的单测在这 |
+| **`span`** | **0** | **已删除** | 写了没接 |
+| **`configure_logging`** | **0** | **已删除** | 写了没接 |
+
+**结论：除了那 50 行（`trace.py` 159 → 112 行），其余每一块都有实际承重。**
+
+### 可选的进一步简化（未做，供决策）
+
+| 可简化项 | 省多少 | 代价 |
+|---|---|---|
+| 删 `wms://stock/{id}` resource | ~15 行 | 少一个"MCP 第二类能力"演示点 |
+| 删 `upsert_stock` 工具 | ~25 行 | 造数据不方便；简历无影响 |
+| **删 `orchestrator/graph.py`**（LangGraph 版） | ~180 行 + 更简单的共享逻辑 | **丢掉简历上的 LangGraph 关键词**；但它是实例分裂 bug 的根源 |
+| 用现成库替代自建熔断器 | ~200 行 | **丢掉"自建 harness"叙事**；且本项目两个编排器共享 Agent，实例级熔断不适用 |
+
+前两条建议做（顺手），后两条**不建议** —— 它们砍掉的是简历价值本身。
+
+---
+
+## 六、已知问题（未修）
 
 | 问题 | 影响 |
 |---|---|
+| ★ **返回商品数少于 `num_items`**（见下方 5.1） | 要 5 个稳定只给 2–3 个，且**静默**，无任何报错或告警 |
 | `models/schemas.py:92` 声明 `dict[str, AgentResult]` | 子类字段（`profile`/`products`/`copies`/`low_stock_alerts`）**被静默截断**，HTTP 响应里看不到。`data.source` 能出来是因为 `data` 是基类字段 |
 | `services/feature_store.py`（117 行）从未被实例化 | README 宣称的「Redis 实时特征」是假的 |
 | A/B 的 `config` 仍无人消费 | 实验**不影响任何行为**（`assign_thompson` 也从未被调用） |
@@ -156,14 +187,76 @@ MCP 关  15/15 可用   source=fallback
 
 ---
 
-## 六、下一步
+### 6.1 返回商品数少于 `num_items`（2026-09-20 实测发现）
 
-按优先级：
+**症状**：请求 `num_items=5`，稳定只返回 2–3 个商品，**没有任何报错或告警**。
 
-1. **D1 `recommend_server`** —— 完成「MCP 双侧」这句话的服务端一半（用户明确要的）
-2. **D9 `docs/mcp-integration.md`** —— 与 D1 一起收尾
-3. **工具层 `ToolSpec`/`ToolRegistry`**（M4 剩余）—— Copilot 的前置
-4. **运营 Copilot**（M6）—— MCP Host 端的多轮 tool-calling loop，最难也最稀缺
-5. **token/成本账本**（M3 剩余）
-6. **评测集 + `--baseline` 对比**（M1.5 / M7）
-7. **诚实化**（M8）
+**实测证据**（3 次请求）：
+
+```
+inventory:    total_checked=10   available=10     ← 只检查了 P001–P010
+product_rec:  candidate_count=15 reranked=5       ← 但重排是从全部 15 个里挑的
+最终商品:      ['P007', 'P010'] / ['P007', 'P010'] / ['P007', 'P003', 'P010']
+```
+
+**根因**（两处召回集合不一致）：
+
+1. `supervisor.py:74-79` —— Phase 1 的召回是 `product_rec_agent.run(user_profile=None, num_items=num_items*2)`，
+   profile 为 `None` 时 `_recall()` 不做排序，直接取 `MOCK_PRODUCTS[:10]` → **P001–P010**
+2. `supervisor.py:89` —— 库存 Agent 检查的就是这 10 个
+3. `supervisor.py:85-88` —— 但 Phase 2 的重排会**再去召回一次**，这次带着 profile，
+   排序后候选集是**全部 15 个**，重排从中挑 5 个（可能包含 P011–P015）
+4. `supervisor.py:98` —— `final_products = [p for p in ranked_products if p.product_id in available_ids]`
+   → 重排挑中的 P011–P015 **不在库存检查过的集合里，被刷掉**
+5. `supervisor.py:99-101` —— `if not final_products` 的兜底**不触发**（因为还剩 2–3 个），
+   于是**静默地**少于 `num_items`
+
+**性质**：**项目从一开始就有这个 bug**，不是本轮改动引入的。
+第一轮代码勘察（写任何代码之前）就已经记录过这一点：
+> "P1 的 `raw_products` 只用于库存调用，真正返回的商品来自 P2 的独立召回。"
+
+本轮的「关闭推理」改动只是让它**更容易暴露** —— 基线时期是 4 个（要 5 个），早就在丢，只是丢得少。
+
+**修复方向**（未做，需要决策）：
+- 方案 A：库存检查的对象改成**全部候选**，而不是 P1 那 10 个
+- 方案 B：Phase 2 的重排复用 Phase 1 的 `raw_products` 作为候选池（通过 `**kwargs` 传入，不改签名）
+- 方案 C：兜底逻辑改成「不足 `num_items` 时补位」
+
+⚠️ 方案 C 单独做有副作用：会把实际缺货的商品补回推荐里（MCP 开启时 P007 会重新出现）。
+
+---
+
+## 七、下一步
+
+**必须先决定的一件事**：要不要修 6.1 那个 bug。
+
+它是**正确性**问题（返回值不符合契约），不是锦上添花。三个修复方向见 6.1，各有副作用，
+需要人来定。**在没有决定之前，不建议往上叠新功能** —— 否则后面所有基于"返回 N 个商品"的
+测试和文档都会建立在一个不成立的前提上。
+
+决定之后，按优先级：
+
+| # | 事项 | 性质 | 备注 |
+|---|---|---|---|
+| 0 | **修 6.1** | 正确性 | 需先选方案 |
+| 1 | **D1 `recommend_server`** | 补齐「MCP 双侧」 | 半天，复用 `harness/deps.py` |
+| 2 | **D9 `docs/mcp-integration.md`** | 文档 | 与 D1 一起收尾 |
+| 3 | **诚实化**（M8） | 清理 | README 里未实测的数字是面试风险 |
+| 4 | 评测集 + `--baseline`（M1.5 / M7） | 证据 | 每次改动能出前后对比 |
+| 5 | token/成本账本（M3 剩余） | 可观测 | |
+| 6 | 工具层 + 运营 Copilot（M4/M6） | 新增能力 | **1–2.5 天，最大的一块，可做可不做** |
+
+**关于第 6 项**：它是最稀缺的（自己实现 tool-calling loop），但也是唯一还没开始的。
+不做它，「MCP 双侧」叙事仍然成立（Server 侧靠 D1 补齐）；做了它才升级成「三端」。
+
+---
+
+## 附：本轮（2026-09-20 第二阶段）做了什么
+
+1. **`docs/harness-mcp-walkthrough.md`** —— 讲清楚 harness 与 MCP 具体是哪几行代码。
+   含三部分：harness 的五步讲法 / 用 P007 走三个 MCP 场景 / 逐条「删掉会怎样」。
+2. **`CLAUDE.md`** —— 给 AI agent 的项目说明（此前仓库里没有任何这类文件）。
+   重点是把六个踩过的坑写下来，避免下一个 agent 重新踩。
+3. **删掉 50 行投机代码** —— `harness/trace.py` 的 `span()` 与 `configure_logging()`，
+   生产代码 0 引用。`trace.py` 159 → 112 行，测试 78 → 75。
+4. **发现 6.1 那个 bug** —— 在验证"删代码有没有弄坏东西"时实测发现的。

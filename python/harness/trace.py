@@ -12,17 +12,20 @@
     SaaS 账号，一下午之后才看到第一个 span。对一个单进程、单接口的本地服务，
     它换不来 grep request_id 已经给不了的东西。
 
-    迁移接缝：span() 的形状刻意做成 OTel span 的样子
-    （name / 始末时间 / duration_ms / attributes 字典）。将来真要换 sink，
-    只改这一个文件。
-
-    什么时候该换 OTel：跨进程/多 worker（那时关联才有意义），
+    什么时候该换 OTel：跨进程 / 多 worker（那时关联才有意义），
     或者 p50 被单进程看不见的东西主导（排队、到远端 MCP Server 的网络）。
+    到那时把本模块的 emit 点接到 OTel SDK 即可 —— 所有日志都经过这里，
+    改动面是一个文件。
+
+    【已删除】原先还有 span() 和 configure_logging() 两个函数。
+    删掉的理由：写完发现没有任何调用点用到它们（grep 生产代码 0 引用）。
+    它们属于"将来可能有用"的投机代码 —— 而项目当下既没有多进程，
+    也没有第二个日志 sink。留着只会让读者多问一句"这个用了没"。
+    真需要时再加。
 """
 
 from __future__ import annotations
 
-import time
 import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator
@@ -107,53 +110,3 @@ def scope(**fields: Any) -> Iterator[None]:
     """
     with bound_contextvars(**fields):
         yield
-
-
-@contextmanager
-def span(event: str, **fields: Any) -> Iterator[None]:
-    """
-    给一段工作计时并记结构化事件。
-
-    结束记 `<event>.end`（带 duration_ms），异常时记 `<event>.failed`
-    （带 duration_ms / error / error_type）后原样抛出。
-
-    刻意捕获 BaseException 而不只是 Exception：CancelledError 从 3.8 起
-    就是 BaseException，客户端断连时我们仍然希望留下一条记录。
-    """
-    start = time.perf_counter()
-    try:
-        yield
-    except BaseException as exc:
-        logger.warning(
-            f"{event}.failed",
-            duration_ms=round((time.perf_counter() - start) * 1000, 1),
-            error=str(exc),
-            error_type=type(exc).__name__,
-            **fields,
-        )
-        raise
-    else:
-        logger.info(
-            f"{event}.end",
-            duration_ms=round((time.perf_counter() - start) * 1000, 1),
-            **fields,
-        )
-
-
-def configure_logging(json: bool = False) -> None:
-    """
-    可选的日志配置。默认【不开】—— 现有控制台输出对演示是友好的。
-
-    之所以要有它，是因为评测运行器和将来任何 CI 都需要机器可读的行。
-    注意：开启后渲染格式会变，但不影响 contextvars 合并（那在 processor 链里）。
-    """
-    processors: list[Any] = [
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-    ]
-    if json:
-        processors.append(structlog.processors.JSONRenderer(ensure_ascii=False))
-    else:
-        processors.append(structlog.dev.ConsoleRenderer())
-    structlog.configure(processors=processors)

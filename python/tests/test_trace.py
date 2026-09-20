@@ -26,7 +26,6 @@ from harness import (
     new_request_id,
     request_context,
     scope,
-    span,
 )
 
 
@@ -133,41 +132,6 @@ async def test_child_bind_does_not_leak_to_sibling(captured: list[dict[str, Any]
         f"两个子任务的 agent 字段串了: {agents}"
     )
     assert all(e["request_id"] == "rid-iso" for e in captured)
-
-
-def test_span_logs_duration(captured: list[dict[str, Any]]) -> None:
-    with request_context("rid-span"):
-        with span("tool.call", tool="batch_query_stock"):
-            pass
-    ev = captured[0]
-    assert ev["event"] == "tool.call.end"
-    assert ev["tool"] == "batch_query_stock"
-    assert "duration_ms" in ev
-    assert ev["request_id"] == "rid-span"
-
-
-def test_span_reraises_and_logs_failure(captured: list[dict[str, Any]]) -> None:
-    with pytest.raises(ValueError, match="boom"):
-        with span("tool.call", tool="query_stock"):
-            raise ValueError("boom")
-
-    ev = captured[0]
-    assert ev["event"] == "tool.call.failed"
-    assert ev["error"] == "boom"
-    assert ev["error_type"] == "ValueError"
-    assert "duration_ms" in ev
-
-
-def test_span_catches_cancelled_error(captured: list[dict[str, Any]]) -> None:
-    """
-    CancelledError 是 BaseException 不是 Exception —— span 必须仍然记一笔再抛出。
-    """
-    with pytest.raises(asyncio.CancelledError):
-        with span("agent.run"):
-            raise asyncio.CancelledError()
-
-    assert captured[0]["event"] == "agent.run.failed"
-    assert captured[0]["error_type"] == "CancelledError"
 
 
 def test_scope_restores_on_exit(captured: list[dict[str, Any]]) -> None:

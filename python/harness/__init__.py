@@ -21,7 +21,6 @@ from .trace import (
     new_request_id,
     request_context,
     scope,
-    span,
 )
 
 __all__ = [
@@ -36,5 +35,4 @@ __all__ = [
     "request_context",
     "reset_runtime",
     "scope",
-    "span",
 ]
