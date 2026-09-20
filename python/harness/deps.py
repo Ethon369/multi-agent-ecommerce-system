@@ -98,8 +98,31 @@ def get_agents() -> dict[str, Any]:
     }
 
 
+_tool_registry: Any = None
+
+
+async def get_tool_registry():
+    """
+    工具注册表单例（惰性、异步）。
+
+    为什么不能用 @lru_cache：装配它需要【异步】去问 MCP Server 有哪些工具
+    （list_tools 是一次真实的 stdio 往返）。lru_cache 不支持 async。
+
+    未装配 MCP 时只返回内置工具 —— Copilot 照样能回答"系统现在健康吗"，
+    只是不能查库存。**少几个工具，而不是整个功能不可用。**
+    """
+    global _tool_registry
+    if _tool_registry is None:
+        from .tools import build_registry
+
+        _tool_registry = await build_registry()
+    return _tool_registry
+
+
 def reset_deps() -> None:
     """丢弃全部单例。测试用。"""
+    global _tool_registry
+    _tool_registry = None
     get_agents.cache_clear()
     get_supervisor.cache_clear()
     get_ab_engine.cache_clear()

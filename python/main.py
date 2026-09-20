@@ -26,7 +26,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
 from harness import get_runtime, new_request_id, request_context
-from harness.deps import get_ab_engine, get_metrics_collector, get_pricing, get_supervisor
+from harness.deps import (
+    get_ab_engine,
+    get_metrics_collector,
+    get_pricing,
+    get_supervisor,
+    get_tool_registry,
+)
 from harness.pricing import PRICING_AS_OF, PRICING_SOURCE
 from models.schemas import RecommendationRequest, RecommendationResponse
 from orchestrator.graph import build_recommendation_graph
@@ -133,6 +139,7 @@ async def get_experiments():
 @app.get("/api/v1/metrics")
 async def get_metrics():
     """查看系统监控指标"""
+    registry = await get_tool_registry()
     return {
         "agents": metrics_collector.get_agent_stats(),
         "business": metrics_collector.get_business_stats(),
@@ -146,6 +153,9 @@ async def get_metrics():
             "source": PRICING_SOURCE,
             "fingerprint": get_pricing().fingerprint(),
         },
+        # 已注册的工具（内置 + MCP）。开着 MCP 时会比关着多几个 ——
+        # 这是判断"MCP 到底接上没有"最快的办法。
+        "tools": registry.snapshot(),
     }
 
 
