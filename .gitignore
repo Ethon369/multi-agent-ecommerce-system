@@ -2,6 +2,14 @@
 .env
 *.env.local
 
+# 评测产物：评测结果必须写到 python/ 【外面】。
+# 原因：uvicorn --reload 会盯着工作目录树里的 *.py，而且结果文件带时间戳、
+# 每次跑都不同 —— 让它们进入版本库或触发重启都没有意义。
+eval_results/
+
+# WorkBuddy 的本地会话记忆（第三方工具的私有状态，不属于项目产物）
+.workbuddy/
+
 # Python
 __pycache__/
 *.py[cod]
