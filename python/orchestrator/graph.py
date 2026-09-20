@@ -17,15 +17,9 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from agents import (
-    InventoryAgent,
-    MarketingCopyAgent,
-    ProductRecAgent,
-    UserProfileAgent,
-)
 from harness import new_request_id
+from harness.deps import get_ab_engine, get_agents
 from models.schemas import Product, UserProfile
-from services.ab_test import ABTestEngine
 
 
 class PipelineState(TypedDict, total=False):
@@ -48,11 +42,14 @@ class PipelineState(TypedDict, total=False):
     _start_time: float
 
 
-user_profile_agent = UserProfileAgent()
-product_rec_agent = ProductRecAgent()
-marketing_copy_agent = MarketingCopyAgent()
-inventory_agent = InventoryAgent()
-ab_engine = ABTestEngine()
+# 原先这里在【模块导入时】构造了 4 个 Agent 和自己的一个 ABTestEngine，
+# 于是和 main.py / supervisor.py 各自持有互不相知的实例：
+#   - 熔断状态各算各的（一个端点打挂的 Agent，另一个不知情）
+#   - A/B 实验结果传不过去（outcome 记进 main 的引擎，Thompson 采样读这个的）
+# 现在统一走 harness.deps，全进程一份。
+#
+# 惰性获取而不是在模块级构造，还有一个实际好处：import 本模块不再立刻
+# 建 LLM 客户端、读 .env —— MCP Server 进程和测试进程未必需要全部依赖。
 
 
 async def init_node(state: PipelineState) -> PipelineState:
@@ -61,13 +58,13 @@ async def init_node(state: PipelineState) -> PipelineState:
     state.setdefault("request_id", new_request_id())
     state["_start_time"] = time.perf_counter()
     state["agent_results"] = {}
-    exp = ab_engine.assign(state["user_id"])
+    exp = get_ab_engine().assign(state["user_id"])
     state["experiment_group"] = exp.get("group", "control")
     return state
 
 
 async def user_profile_node(state: PipelineState) -> PipelineState:
-    result = await user_profile_agent.run(
+    result = await get_agents()["user_profile"].run(
         user_id=state["user_id"],
         context=state.get("context", {}),
     )
@@ -77,7 +74,7 @@ async def user_profile_node(state: PipelineState) -> PipelineState:
 
 
 async def product_recall_node(state: PipelineState) -> PipelineState:
-    result = await product_rec_agent.run(
+    result = await get_agents()["product_rec"].run(
         user_profile=None,
         num_items=state.get("num_items", 10) * 2,
     )
@@ -98,7 +95,7 @@ async def parallel_phase1(state: PipelineState) -> PipelineState:
 
 
 async def rerank_node(state: PipelineState) -> PipelineState:
-    result = await product_rec_agent.run(
+    result = await get_agents()["product_rec"].run(
         user_profile=state.get("user_profile"),
         num_items=state.get("num_items", 10),
     )
@@ -108,7 +105,7 @@ async def rerank_node(state: PipelineState) -> PipelineState:
 
 
 async def inventory_node(state: PipelineState) -> PipelineState:
-    result = await inventory_agent.run(
+    result = await get_agents()["inventory"].run(
         products=state.get("raw_products", []),
     )
     state["available_ids"] = set(getattr(result, "available_products", []))
@@ -139,7 +136,7 @@ async def filter_node(state: PipelineState) -> PipelineState:
 
 
 async def marketing_copy_node(state: PipelineState) -> PipelineState:
-    result = await marketing_copy_agent.run(
+    result = await get_agents()["marketing_copy"].run(
         user_profile=state.get("user_profile"),
         products=state.get("final_products", []),
     )

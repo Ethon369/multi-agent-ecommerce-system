@@ -26,19 +26,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
 from harness import get_runtime, new_request_id, request_context
+from harness.deps import get_ab_engine, get_metrics_collector, get_supervisor
 from models.schemas import RecommendationRequest, RecommendationResponse
-from orchestrator.supervisor import SupervisorOrchestrator
 from orchestrator.graph import build_recommendation_graph
-from services.ab_test import ABTestEngine
-from services.metrics import MetricsCollector
 
 logger = structlog.get_logger()
 settings = get_settings()
 
 
-ab_engine = ABTestEngine()
-metrics_collector = MetricsCollector()
-supervisor = SupervisorOrchestrator(ab_engine=ab_engine)
+# 走组合根取共享单例 —— 与 graph.py、未来的 MCP Server / Copilot 用的是同一份。
+# 此前这里是三套互不相知的实例，导致熔断状态和 A/B 实验结果在不同路径上不同步。
+ab_engine = get_ab_engine()
+metrics_collector = get_metrics_collector()
+supervisor = get_supervisor()
 rec_graph = None
 
 

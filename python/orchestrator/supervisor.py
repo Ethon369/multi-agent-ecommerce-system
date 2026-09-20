@@ -25,13 +25,8 @@ from typing import Any
 
 import structlog
 
-from agents import (
-    InventoryAgent,
-    MarketingCopyAgent,
-    ProductRecAgent,
-    UserProfileAgent,
-)
 from harness import new_request_id, request_context
+from harness.deps import get_ab_engine, get_agents
 from models.schemas import (
     Product,
     RecommendationRequest,
@@ -47,11 +42,15 @@ class SupervisorOrchestrator:
     """Coordinates four agents in parallel-then-aggregate pattern."""
 
     def __init__(self, ab_engine: ABTestEngine | None = None):
-        self.user_profile_agent = UserProfileAgent()
-        self.product_rec_agent = ProductRecAgent()
-        self.marketing_copy_agent = MarketingCopyAgent()
-        self.inventory_agent = InventoryAgent()
-        self.ab_engine = ab_engine or ABTestEngine()
+        # 走 harness.deps 拿共享单例，而不是各自 new 一套。
+        # 否则 graph.py 那条路径会持有另一组 Agent 和另一个 ABTestEngine，
+        # 导致熔断状态与 A/B 实验结果两边互不相知。
+        agents = get_agents()
+        self.user_profile_agent = agents["user_profile"]
+        self.product_rec_agent = agents["product_rec"]
+        self.marketing_copy_agent = agents["marketing_copy"]
+        self.inventory_agent = agents["inventory"]
+        self.ab_engine = ab_engine or get_ab_engine()
 
     async def recommend(self, request: RecommendationRequest) -> RecommendationResponse:
         request_id = new_request_id()
