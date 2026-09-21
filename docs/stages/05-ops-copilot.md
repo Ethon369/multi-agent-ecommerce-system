@@ -258,6 +258,6 @@ stop_reason = completed     工具调用 = ['list_products']
 
 | 限制 | 影响 | 修法 |
 |---|---|---|
-| 会话存在**进程内存** | 多 worker 部署会失效（第二次提问可能落到另一个进程） | 换 Redis（`services/feature_store.py` 已有 Redis 用法）或让客户端带历史 |
+| 会话存在**进程内存** | 多 worker 部署会失效（第二次提问可能落到另一个进程） | 换 Redis，或让客户端带历史 |
 | 无鉴权 | 任何人都能调，而它会消耗 LLM 费用 | 加 API key 中间件 |
 | 无流式输出 | 用户要等整个循环跑完才看到回答 | SSE |

@@ -258,7 +258,9 @@ recommend_products(
 ```
 - 说明：完整四 Agent 编排。**实测延迟 15.8–16.6 秒**（真实 LLM），不是 README 宣称的 2 秒。
 - 返回：`{request_id, products[], marketing_copies[], experiment_group, total_latency_ms}`
-- **设计注意（关键坑）：** 不能直接返回 `RecommendationResponse.model_dump()`。因为 `RecommendationResponse.agent_results` 声明为 `dict[str, AgentResult]`（`models/schemas.py:92`），pydantic 按声明类型序列化会**截断子类字段** —— 实测响应里看不到 `profile`、`products`、`copies`、`available_products`。因此这里显式构造扁平返回结构（与 `main.py:93-100` 的 `/recommend/graph` 端点做法一致），绕开该问题。
+- **设计注意：** 显式构造扁平返回结构，不直接返回 `RecommendationResponse.model_dump()`。
+  **原始理由**是绕开 pydantic 的子类字段截断（当时 `agent_results` 声明为 `dict[str, AgentResult]`）—— 该 bug 已于 2026-09-21 修复。
+  **保留扁平结构的现行理由**：信息都在顶层，对 Host 侧模型更友好（不用猜嵌套），也顺带挡掉 `latency`/`confidence` 这类运维细节，省 token。
 - 工具描述里必须写明"约 16 秒"，引导 Host 侧模型正确预期，避免被判定为超时。
 
 ```python
@@ -474,7 +476,7 @@ async with Client(wms_mcp) as client:
 | 项目 starlette/pydantic 满足 mcp v2 要求 | 本机元数据 | starlette 1.6.0（要求 ≥0.48）、pydantic 2.13.5（要求 ≥2.12） |
 | v2 导包路径为 `mcp.server.MCPServer` | 官方 v2 文档 | `FastMCP` 已重命名，旧路径删除 |
 | 当前 venv 未装 mcp | 本机元数据查询 | `mcp` / `fastmcp` / `langchain-mcp-adapters` 均 MISSING |
-| `agent_results` 子类字段被截断 | 前序会话实测响应体 | 仅剩基类 6 字段 |
+| `agent_results` 子类字段被截断 | 前序会话实测响应体 | 仅剩基类 6 字段（**已于 2026-09-21 修复**，见 progress.md） |
 | 全链路真实延迟 | 前序会话实测 | 15.8–16.6 s（profile 7.97 + rerank 4.13 + copy 3.74） |
 | 官方参考服务器仅剩 7 个 | 官方仓库 README | Everything / Fetch / Filesystem / Git / Memory / Sequential Thinking / Time |
 | SQLite / PostgreSQL / Redis 等官方 Server 已归档 | 官方仓库 README「Archived」段 | 移入 `servers-archived`（2025-05-29） |
@@ -496,7 +498,7 @@ async with Client(wms_mcp) as client:
 |---|---|---|---|
 | `server-time` | Python（本机需先装 uv，或 `pip install mcp-server-time`） | 营销文案里的"限时/当季/节日"话术目前靠 LLM 猜时间；接真实时间可让话术有依据 | **建议** |
 | `server-fetch` | `npx -y @modelcontextprotocol/server-fetch` | 营销 Agent 抓取商品页/竞品信息提炼卖点 | **建议（需评估外网与合规）** |
-| `server-memory` | `npx -y @modelcontextprotocol/server-memory` | 跨会话用户长期偏好（知识图谱）。注意与项目已有的 Redis `FeatureStore` 职责重叠，别重复建设 | 可选 |
+| `server-memory` | `npx -y @modelcontextprotocol/server-memory` | 跨会话用户长期偏好（知识图谱）。可一并承担"用户长期偏好"这一职责（本项目原先预留的 Redis 特征层从未接线，已删除），别重复建设 | 可选 |
 | `server-everything` | 官方参考 | 学习 MCP 的工具/资源/提示词三类能力全貌 | 学习用 |
 | `server-sequentialthinking` | 官方参考 | 复杂推理规划 | **不建议**：本项目已 16 s 延迟，再加推理链更慢；四 Agent 是确定性编排 |
 | `server-filesystem` | 官方参考 | 文件读写 | **不建议**：项目只有 `image_url` 字段，无真实图片文件 |

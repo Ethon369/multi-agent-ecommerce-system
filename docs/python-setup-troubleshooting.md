@@ -172,7 +172,7 @@ rmdir /s /q .venv
 
 ### 3. Redis / Milvus 不影响最小启动
 
-代码中 `FeatureStore` 的 Redis 客户端与 Milvus 向量库**从未被实例化**（构造函数里是 `None` 占位），商品召回使用内置的 15 条 mock 数据。因此：
+代码中 Milvus 向量库**从未被 import**，商品召回使用内置的 15 条 mock 数据（Redis 特征层曾有一份从未接线的实现，已删除）。因此：
 
 - 只想把服务跑起来：**不需要** `docker-compose up`；
 - 需要完整体验 Redis/Milvus/MySQL：再执行 `docker-compose up -d`。

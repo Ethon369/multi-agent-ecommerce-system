@@ -36,7 +36,7 @@
 | "CTR 提升 15%、文案点击率提升 23%" | **没有任何数据支撑**。A/B 引擎的 `config` 甚至从未被读取 —— 实验目前不影响任何行为 |
 | "P99 < 2s" | 从未达到。实测 p95 是 3,997 ms |
 | "三语言实现（Python/Java/Go）" | **Java/Go 实现已删除**，只保留 Python |
-| "Redis Sorted Set 实时特征" | `services/feature_store.py` 代码完整（117 行），但**从未被实例化** |
+| "Redis Sorted Set 实时特征" | **从未实现**。曾有一份 117 行的 `services/feature_store.py`，但从未被实例化，已在死代码清理中删除 |
 | "Milvus 向量检索" | `pymilvus` 在依赖里，但**代码里从未 import** |
 | "MySQL 实时库存" | 实际是 **SQLite + MCP**（这是二次开发时才真正接上的） |
 | "重试最多 3 次" | 实际是 **2 次尝试**（即只重试 1 次）—— 参数原名 `max_retries` 却表示总尝试次数，已改名为 `max_attempts` |
@@ -194,11 +194,11 @@ Supervisor 模式                     Handoffs 模式
 
 ```python
 # Step 1：获取用户行为数据
-# ⚠️ 注意：services/feature_store.py 里有一套完整的 Redis 实现（117 行，
-#    含 1h/24h/7d 滑动窗口 + RFM），但【从未被实例化过】——
-#    user_profile_agent.py 的 self.feature_store 一直是 None，走的是内置兜底数据。
-#    想真正启用它需要注入 FeatureStore 实例（这是一个已知缺口，不是已完成能力）。
-behavior = await self._collect_behavior(user_id, context)   # 目前走内置兜底
+# ⚠️ 注意：这里用的是【写死的演示数据】，不是真实行为数据。
+#    曾经有一份 117 行的 Redis 实现（services/feature_store.py），但从未被
+#    实例化过，已删除 —— 与其留一个永远走不到的分支，不如让"数据是假的"
+#    这件事在代码里一眼可见。想接真实行为源，只改 _collect_behavior 一处。
+behavior = await self._collect_behavior(user_id, context)   # 内置兜底数据
 # 返回: {"clicks_1h": 12, "purchases_7d": 3, "categories": ["手机", "耳机"]}
 
 # Step 2：调用 LLM 分析，输出结构化画像
@@ -744,8 +744,7 @@ multi-agent-ecommerce-system/
     ├── services/
     │   ├── ab_test.py           #   A/B 引擎（分桶 + Thompson）
     │   ├── mcp_client.py        #   ★ MCP 短连接客户端（永不抛异常给调用方）
-    │   ├── metrics.py           #   指标 + token/成本累计
-    │   └── feature_store.py     #   ⚠️ Redis 特征实现完整，但【从未被实例化】
+    │   └── metrics.py           #   指标 + token/成本累计
     │
     ├── eval/                    # ★ 评测闭环
     │   ├── cases.jsonl          #   10 条 golden set

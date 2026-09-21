@@ -146,9 +146,8 @@ python/
 ├── services/
 │   ├── ab_test.py           分桶 + Thompson 采样
 │   ├── metrics.py           内存指标
-│   ├── mcp_client.py        MCP 短连接客户端，永不抛异常给调用方
-│   └── feature_store.py     Redis 特征（★ 已实现但从未被实例化）
-└── tests/                   78 个测试，全部离线
+│   └── mcp_client.py        MCP 短连接客户端，永不抛异常给调用方
+└── tests/                   144 个测试，全部离线
 ```
 
 ---
@@ -172,9 +171,16 @@ python/
 **新能力默认值一律 `false`** —— 保证现有链路零破坏。
 
 ### 改响应模型时注意
-`models/schemas.py:92` 声明的是 `dict[str, AgentResult]`，
-**pydantic 会按声明类型序列化，子类字段会被静默截断**。
-要暴露子类字段，加**新的顶层字段**，不要塞进 `agent_results`。
+`models/schemas.py` 的 `agent_results` 声明为 `dict[str, SerializeAsAny[AgentResult]]`。
+**不要动它** —— 两个方向都会坏：
+
+- 改回裸的 `dict[str, AgentResult]` → pydantic 按【声明类型】序列化，
+  子类字段（`profile`/`products`/`copies`/…）会被**静默截断**
+- 改成联合类型（`UserProfileResult | ProductRecResult | …`）→
+  `BaseAgent._fallback()` 在超时/熔断时返回的是**基类** `AgentResult`，
+  联合类型会让这条降级路径校验失败（故障注入的 4/4 HTTP 200 会变成 500）
+
+回归测试：`tests/test_response_schema.py`。新增 Agent 时这里**不用改**。
 
 ### 注释风格
 中文，写**为什么**而不是**是什么**。

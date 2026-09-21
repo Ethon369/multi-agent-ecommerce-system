@@ -42,11 +42,11 @@ class BaseAgent(ABC):
 SYSTEM_PROMPT = """...输出JSON格式:
 {"segments":["active"], "rfm_score":{"recency":0.8}}..."""
 
-# 2. 行为数据收集: 优先从Feature Store获取,否则用上下文兜底
+# 2. 行为数据收集: 调用方给了 context 就用它,否则用内置兜底值
+#    (曾有一个 if self.feature_store 分支指向 Redis 实现,
+#     但那个模块从未被实例化,已删除 —— 见 README「哪些数字能信」)
 async def _collect_behavior(self, user_id, context):
-    if self.feature_store:  # Phase 2注入Redis
-        return await self.feature_store.get_user_features(user_id)
-    return {...}  # 降级: 使用context中的默认数据
+    return {...}  # 内置兜底: 写死的演示数据
 
 # 3. 健壮的解析: 处理LLM可能输出的markdown代码块
 def _parse_profile(self, user_id, raw):

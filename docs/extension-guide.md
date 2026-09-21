@@ -60,8 +60,10 @@ POST /api/v1/recommend                    main.py:73
 |---|---|---|
 | `services/ab_test.py` | 流量分桶 + Thompson Sampling | 可用，`/api/v1/experiments` 可查 |
 | `services/metrics.py` | Agent/业务指标统计 | 可用，但**未暴露 Prometheus `/metrics` 端点** |
-| `services/feature_store.py` | Redis 实时特征（1h/24h/7d 滑窗 + RFM） | **代码完整，但从未被实例化** |
 | `orchestrator/graph.py` | LangGraph 状态图版编排 | 可用，走 `/api/v1/recommend/graph` |
+
+> `services/feature_store.py`（Redis 实时特征，117 行）**曾存在但从未被实例化**，
+> 已于 2026-09-21 的死代码清理中删除。想接真实行为源，见下面第 2 节。
 
 ---
 
@@ -71,8 +73,7 @@ POST /api/v1/recommend                    main.py:73
 
 | 位置 | 现状 | 你需要做什么 |
 |---|---|---|
-| `agents/user_profile_agent.py:54` `self.feature_store = None` | `_collect_behavior()`（:79）已有"有就走、没有就用 context 兜底"的分支 | 注入 `FeatureStore` 实例即启用 Redis 实时特征 |
-| `services/feature_store.py`（117 行已实现） | 无人调用 | 见下方"坑 2"：**必须用 `redis.asyncio`** |
+| `agents/user_profile_agent.py` 的 `_collect_behavior()` | 直接返回**写死的演示行为数据**（曾有一个指向 Redis 的分支，因那个模块从未被实例化，已随死代码清理一并删除） | 在 `_collect_behavior()` 里换成一次真实查询 —— 只改这一处。注意用 `redis.asyncio`，见"坑 2" |
 | `agents/product_rec_agent.py:74` `self.vector_store = None`；`_recall()` 里 `if self.vector_store: pass`（:105） | 召回走写死的 `MOCK_PRODUCTS`（15 条） | 实现向量检索 / 接 Milvus，替换 mock |
 | `agents/inventory_agent.py:30` `self.db = None`；`_check_stock()` 里 `if self.db: pass`（:82） | 库存直接读 `Product.stock` | 接真实库存表 |
 | `config/settings.py:26` `database_url` | **没有任何 SQLAlchemy 引擎、没有建表脚本** | 用数据库得从零接 |
@@ -99,18 +100,21 @@ POST /api/v1/recommend                    main.py:73
 4. `orchestrator/supervisor.py`：在合适的 Phase 用 `asyncio.gather` 挂上去
 5. 指标收集自动生效（`main.py:_collect_metrics` 是遍历 `response.agent_results` 的）
 
-⚠️ **第 6 步容易漏**：`RecommendationResponse.agent_results` 声明为 `dict[str, AgentResult]`，pydantic 会**按声明类型序列化**，子类字段会被截断。已实测：当前响应里每个 Agent 只有
-`agent_name / success / latency_ms / error / data / confidence` —— **看不到 `profile`、`products`、`copies`、`available_products`**。想让新 Agent 的产出出现在响应里，必须把该字段改成联合类型：
+✅ **第 6 步现在不需要额外操作**（2026-09-21 已修）：`agent_results` 声明为
+`dict[str, SerializeAsAny[AgentResult]]`，序列化按【运行时真实类型】走，
+新 Agent 的产出会自动出现在响应里。
 
-```python
-agent_results: dict[str, UserProfileResult | ProductRecResult
-                          | MarketingCopyResult | InventoryResult | XxxResult]
-```
+> 修之前这里是个坑：声明成基类 `AgentResult` 时，pydantic 按【声明类型】序列化，
+> 子类独有字段被静默截断 —— 实测 `ProductRecResult` 的 8 个字段进到响应里只剩 6 个。
+>
+> **不要改回裸的 `dict[str, AgentResult]`，也不要改成联合类型** ——
+> 后者会让 `BaseAgent._fallback()` 返回的基类结果校验失败（超时/熔断时
+> 从 HTTP 200 变成 500）。回归测试：`tests/test_response_schema.py`。
 
 ### L3 落地数据层（最能体现工程完整度）
 
 - 接 SQLAlchemy + SQLite/MySQL，把 `MOCK_PRODUCTS` 换成真实表（含分页、索引、事务边界）
-- 注入 `FeatureStore` 实现真实滑窗特征与 RFM
+- 在 `user_profile_agent._collect_behavior()` 里接真实行为源，实现滑窗特征与 RFM
 - 要点：连接池、异常时的降级路径、写操作的幂等
 
 ### L4 架构级
@@ -123,12 +127,12 @@ agent_results: dict[str, UserProfileResult | ProductRecResult
 
 ## 4. 已实测的坑（照着避）
 
-1. **`agent_results` 子类字段被截断**（见 L2 第 6 步）。
-2. **`FeatureStore` 必须用异步 Redis 客户端。** 代码里写的是 `await self.redis.zadd(...)` / `await self.redis.zrangebyscore(...)`，如果用 `from redis import Redis`（同步）会直接 `TypeError`。正确写法：
+1. ~~**`agent_results` 子类字段被截断**~~ —— ✅ **已修**（2026-09-21，见 L2 第 6 步）。
+   踩坑记录保留：pydantic 按【声明类型】序列化，声明成基类就会静默丢掉子类字段。
+2. **接 Redis 必须用异步客户端。** 调用处是 `await`，若用 `from redis import Redis`（同步）会直接 `TypeError`：
    ```python
    from redis.asyncio import Redis
    client = Redis.from_url(settings.redis_url, decode_responses=True)
-   self.user_profile_agent.feature_store = FeatureStore(redis_client=client, ttl=settings.feature_ttl_seconds)
    ```
 3. **`/api/v1/experiments/{experiment_id}/outcome` 的 `group`、`success` 是 query 参数**，不是 JSON body（`main.py:136`），用 curl 传 body 会 422。
 4. **`main.py` 里 `reload=True` 只适合开发**，自建部署要去掉（它会额外起一个 reloader 进程）。

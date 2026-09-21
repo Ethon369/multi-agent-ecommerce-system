@@ -38,7 +38,7 @@
 
 | # | 交付物 | 状态 | 说明 |
 |---|---|---|---|
-| D1 | `mcp_servers/recommend_server.py` | ✅ | 4 个工具，协议壳零业务逻辑；返回扁平结构绕开 pydantic 截断 |
+| D1 | `mcp_servers/recommend_server.py` | ✅ | 4 个工具，协议壳零业务逻辑；返回扁平结构（信息在顶层，对模型更友好） |
 | D2 | `mcp_servers/wms_server.py` | ✅ | 4 工具 + 1 resource，stdio |
 | D3 | `mcp_servers/init_wms_db.py` | ✅ | 15 商品，**9 个与目录库存故意不同**（A5 的根据） |
 | D4 | `services/mcp_client.py` | ✅ | 每次调用短连接，永不抛异常给调用方 |
@@ -191,8 +191,8 @@ MCP 关  15/15 可用   source=fallback
 | 问题 | 影响 |
 |---|---|
 | ~~返回商品数少于 `num_items`~~ | ✅ **已修复**（阶段 A） |
-| `models/schemas.py:92` 声明 `dict[str, AgentResult]` | 子类字段（`profile`/`products`/`copies`/`low_stock_alerts`）**被静默截断**，HTTP 响应里看不到。`data.source` 能出来是因为 `data` 是基类字段 |
-| `services/feature_store.py`（117 行）从未被实例化 | README 宣称的「Redis 实时特征」是假的 |
+| ~~`models/schemas.py` 的 `agent_results` 子类字段被截断~~ | ✅ **已修复**（2026-09-21）：改用 `SerializeAsAny[AgentResult]`，端到端实测四个 Agent 的专属字段全部出现 |
+| ~~`services/feature_store.py`（117 行）从未被实例化~~ | ✅ **已删除**（2026-09-21 死代码清理），README 的「Redis 实时特征」也随之撤下 |
 | A/B 的 `config` 仍无人消费 | 实验**不影响任何行为**（`assign_thompson` 也从未被调用） |
 | ~~README 未实测数字~~ | ✅ **已清理**（阶段 G），README 顶部新增「哪些数字能信」 |
 | `agents/base_agent.py` 的 `_call_count`/`_error_count` | 保留但已不是健康状态来源，容易误导读者 |
