@@ -65,15 +65,14 @@ def _flat_response(payload: dict[str, Any]) -> dict[str, Any]:
     """
     把推荐响应压成扁平结构。
 
-        ⚠️ 为什么不能直接返回 RecommendationResponse.model_dump()
+        为什么不直接返回 RecommendationResponse.model_dump()
         ─────────────────────────────────────────────────────
-        models/schemas.py 里 agent_results 声明的是 dict[str, AgentResult]，
-        pydantic 会按【声明类型】序列化，于是子类独有字段
-        （profile / products / copies / available_products / low_stock_alerts /
-        purchase_limits）会被静默截断 —— 实测响应里完全看不到。
+        理由不再是"绕开 pydantic 截断"—— 那个 bug 已于 2026-09-21 修复
+        （agent_results 改用 SerializeAsAny，子类字段不再被吞）。
 
-        所以这里显式构造扁平结构（与 main.py 的 /recommend/graph 端点做法一致）。
-        顺带这个结构对模型也更友好：信息都在顶层，不用猜嵌套。
+        现行理由：这个结构是喂给 Host 侧【模型】的。
+        - 信息全在顶层，模型不用猜嵌套
+        - 顺带挡掉 latency / confidence 这类运维细节，省 token
     """
     return {
         "request_id": payload.get("request_id"),

@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializeAsAny
 
 
 class UserSegment(str, Enum):
@@ -104,8 +104,9 @@ class HarnessReport(BaseModel):
     """
     运行时保障层的自述报告。
 
-    ⚠️ 刻意做成 RecommendationResponse 的【顶层字段】，而不是塞进 agent_results。
-    原因见下面 agent_results 的注释 —— 放进去会被静默截断。
+    刻意做成 RecommendationResponse 的【顶层字段】而不是塞进 agent_results：
+    它描述的是【整个请求】的运行时状态（账本 / 熔断 / 各 Agent 耗时），
+    不是某一个 Agent 的产出 —— 塞进去语义就是错的。
     """
 
     usage: HarnessUsageReport = Field(default_factory=HarnessUsageReport)
@@ -119,11 +120,19 @@ class RecommendationResponse(BaseModel):
     products: list[Product] = Field(default_factory=list)
     marketing_copies: list[dict[str, str]] = Field(default_factory=list)
     experiment_group: str = "control"
-    # ⚠️ 这里声明的是基类 AgentResult，pydantic 会按【声明类型】序列化，
-    # 所以子类独有的字段（profile / products / copies / low_stock_alerts /
-    # available_products / purchase_limits）会被静默截断，HTTP 响应里看不到。
-    # 想暴露新信息请加到【顶层】（比如下面的 harness），不要塞进这里。
-    agent_results: dict[str, AgentResult] = Field(default_factory=dict)
+    # SerializeAsAny 是为了绕开 pydantic 的一个【静默】行为：
+    # 它默认按【声明类型】序列化，所以声明成基类 AgentResult 时，
+    # 子类独有的字段（profile / products / copies / low_stock_alerts /
+    # available_products / purchase_limits）会被直接丢掉 ——
+    # 不报错、无日志。实测：ProductRecResult 的 8 个字段到这里只剩 6 个。
+    #
+    # 为什么不用联合类型（UserProfileResult | ProductRecResult | ...）：
+    # BaseAgent._fallback() 在超时/熔断时返回的是【基类】AgentResult，
+    # 联合类型会让这条降级路径校验失败 —— 故障注入的 4/4 HTTP 200 会变成 500。
+    # SerializeAsAny 只改序列化、不改校验，所以降级路径不受影响。
+    #
+    # 附带好处：新增 Agent 时这里【不用动】，不会再复发。
+    agent_results: dict[str, SerializeAsAny[AgentResult]] = Field(default_factory=dict)
     harness: HarnessReport | None = None
     total_latency_ms: float = 0.0
     timestamp: datetime = Field(default_factory=datetime.now)
