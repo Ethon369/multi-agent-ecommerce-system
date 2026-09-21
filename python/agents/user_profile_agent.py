@@ -48,7 +48,6 @@ class UserProfileAgent(BaseAgent):
         # 集中在 harness/llm.py 一处。这是「抽几个字段」的确定性任务，
         # 推理只贡献延迟不贡献质量 —— 实测量级见 harness/llm.py 顶部。
         self.llm = build_chat_model("user_profile", temperature=0.3, max_tokens=1024)
-        self.feature_store: Any = None  # injected in Phase 2
 
     async def _execute(self, **kwargs: Any) -> UserProfileResult:
         user_id: str = kwargs["user_id"]
@@ -72,9 +71,12 @@ class UserProfileAgent(BaseAgent):
         )
 
     async def _collect_behavior(self, user_id: str, context: dict) -> dict:
-        """Collect user behavior from feature store or context fallback."""
-        if self.feature_store:
-            return await self.feature_store.get_user_features(user_id)
+        """取行为数据：调用方给了 context 就用它，否则用内置兜底值。
+
+        兜底值是【写死的演示数据】。想接真实行为源（Redis / 数仓），
+        在这里换成一次真实查询即可 —— 刻意不留 `self.feature_store = None`
+        那种永不成立的钩子：一个永远走不到的分支，只会让人以为它已经接上了。
+        """
         return {
             "user_id": user_id,
             "recent_views": context.get("recent_views", ["手机", "耳机", "平板"]),

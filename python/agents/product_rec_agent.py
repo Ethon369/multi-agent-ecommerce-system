@@ -15,7 +15,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from config import get_settings
 from harness import build_chat_model
-from models.schemas import AgentResult, Product, ProductRecResult, UserProfile
+from models.schemas import Product, ProductRecResult, UserProfile
 
 from .base_agent import BaseAgent
 

@@ -17,7 +17,6 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from contextlib import asynccontextmanager
-from typing import Any
 
 import structlog
 import uvicorn

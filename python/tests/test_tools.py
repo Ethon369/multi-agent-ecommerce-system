@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from harness.tools.registry import ToolRegistry
-from harness.tools.spec import ToolResult, ToolSpec, fn_to_async
+from harness.tools.spec import ToolSpec, fn_to_async
 
 
 async def _ok(**kwargs: Any) -> Any:

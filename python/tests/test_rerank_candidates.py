@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from agents.product_rec_agent import MOCK_PRODUCTS, ProductRecAgent
-from models.schemas import AgentResult, Product, ProductRecResult, UserProfile
+from models.schemas import AgentResult, ProductRecResult, UserProfile
 
 
 @pytest.fixture

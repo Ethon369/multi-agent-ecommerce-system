@@ -126,19 +126,3 @@ class WMSMCPClient:
         # MCP 要求结构化输出的顶层是 JSON 对象，所以返回裸数组的工具
         # 会被包成 {"result": [...]}。这里统一拆掉，让调用方拿到裸数组。
         return data.get("result", []) if isinstance(data, dict) else data
-
-    async def read_stock_resource(self, product_id: str) -> str | None:
-        """读 MCP 资源（除工具外的第二种能力类型）。"""
-        import asyncio
-
-        try:
-            async with asyncio.timeout(self.timeout_s):
-                async with Client(self._server_params()) as client:
-                    result = await client.read_resource(f"wms://stock/{product_id}")
-            return result.contents[0].text
-        except Exception as exc:
-            logger.error(
-                "mcp.resource_failed", server="wms", uri=f"wms://stock/{product_id}",
-                error=str(exc)[:200],
-            )
-            return None

@@ -28,8 +28,7 @@ router = APIRouter(prefix="/api/v1", tags=["copilot"])
 #
 # ⚠️ 已知限制：多 worker 部署会失效（用户第二次提问可能落到另一个进程，
 #    就读不到上一轮的历史）。单进程演示够用。
-#    要修的话：把 _sessions 换成 Redis（本项目 services/feature_store.py
-#    已经演示了 Redis 的用法），或者干脆让客户端每次把历史带上。
+#    要修的话：把 _sessions 换成 Redis，或者干脆让客户端每次把历史带上。
 _copilot = None
 
 
@@ -46,12 +45,6 @@ async def _get_copilot():
 
         _copilot = CopilotAgent(await get_tool_registry())
     return _copilot
-
-
-def reset_copilot() -> None:
-    """丢弃单例。测试用。"""
-    global _copilot
-    _copilot = None
 
 
 class CopilotRequest(BaseModel):
