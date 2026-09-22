@@ -90,19 +90,17 @@ cd python
 > 这台机器上有 11 个 Python 解释器、其中 6 个目录名叫 `.venv`。
 > 写 `"python"` 会命中 PATH 上的任意一个，症状是 `ModuleNotFoundError` 且极难定位。
 
-### 3. 暴露出来的 4 个工具
+### 3. 暴露出来的 2 个工具
 
 | 工具 | 说明 | 耗时 |
 |---|---|---|
-| `recommend_products(user_id, scene, num_items, context)` | 完整四 Agent 编排，返回商品+文案+实验分组+用量 | **约 5–15 秒** |
-| `get_experiments()` | A/B 实验分组配置与统计 | 毫秒级 |
+| `recommend_products(user_id, scene, num_items, context)` | 完整四 Agent 编排，返回商品+文案+用量 | **约 5–15 秒** |
 | `get_metrics()` | 各 Agent 指标、熔断状态、token 与成本 | 毫秒级 |
-| `record_experiment_outcome(experiment_id, group, success)` | 记录实验结果（**唯一写操作**） | 毫秒级 |
 
 **两个刻意的设计**：
 
-- **只有 1 个写操作**，且它只累加计数、是幂等安全的 —— Host 侧的模型误触发一次，
-  后果只是多一个样本，不会破坏数据。
+- **全部只读**：暴露的 2 个工具都不改任何状态 —— Host 侧的模型误触发也不会产生副作用
+  （早期还有一个 `record_experiment_outcome` 写操作，已随那个没接线的 A/B 引擎一并删除）。
 - **`recommend_products` 的描述里写明了"约 5-15 秒"** —— 否则 Host 侧的模型会按
   本地查询的预期给它一个短超时，然后判定失败。
 

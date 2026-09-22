@@ -68,7 +68,7 @@ cd python && ./.venv/Scripts/python.exe mcp_servers/init_wms_db.py --reset
 
 ---
 
-## 三、六个陷阱（都是实际踩过的）
+## 三、七个陷阱（都是实际踩过的）
 
 ### 1. 假的根目录 `.venv`
 见上文。**永远用 `python/.venv/Scripts/python.exe` 的绝对/相对完整路径。**
@@ -117,6 +117,28 @@ v2 的字段全是 snake_case（`tool.input_schema`、`result.is_error`），
 `transport` 参数在 `run()` 上而不是构造函数上。
 **只以官方 v2 文档为准，不要照抄博客。**
 
+### 7. Redis 的两个连接坑（症状都是"特征层好像没接上"）
+```python
+Redis.from_url(settings.redis_url, decode_responses=True, protocol=2)   # ✓
+Redis.from_url("redis://localhost:6379/0")                             # ✗ 两个坑都在里面
+```
+
+**坑 A —— 必须 `protocol=2`。** 本机 6379 上是原生 Redis **5.0**，它不支持 `HELLO`
+命令，而 redis-py 5+ 默认走 RESP3、建连时先发 HELLO →
+`ResponseError: unknown command 'HELLO'`。
+RESP2 在 Redis 7.x 上同样合法，所以这不是"只在本机能跑的 hack"。
+
+**坑 B —— URL 必须写 `127.0.0.1`，不能写 `localhost`。**
+`localhost` 会先解析到 IPv6 的 `::1`，而本机 Redis 只监听 IPv4 ——
+首次连接在 `::1` 上挂约 2 秒才回落。实测首次 PING：
+`localhost` **2052.3 ms** / `127.0.0.1` **2.4 ms**。
+
+这个 2 秒大于请求路径的超时（`feature_store_timeout_s` = 0.5），于是连接会在
+建立中途被掐断 —— **每次请求都重新发起连接、每次都超时**，`source` 永远是
+`fallback`，看起来就像"特征层根本没接上"。
+
+所以 `main.py` 的 lifespan 里有一次 `warmup()`，把首次连接的代价在启动时付掉。
+
 ---
 
 ## 四、项目结构
@@ -144,10 +166,12 @@ python/
 │   ├── wms_server.py        MCP Server：SQLite 库存，4 工具 + 1 resource
 │   └── init_wms_db.py       建表 + 种子（★ 种子故意与 Product.stock 不一致）
 ├── services/
-│   ├── ab_test.py           分桶 + Thompson 采样
 │   ├── metrics.py           内存指标
-│   └── mcp_client.py        MCP 短连接客户端，永不抛异常给调用方
-└── tests/                   144 个测试，全部离线
+│   ├── mcp_client.py        MCP 短连接客户端，永不抛异常给调用方
+│   └── feature_store.py     Redis 实时特征（可选依赖，默认关闭；同契约：永不抛）
+├── scripts/
+│   └── seed_behavior.py     灌行为种子数据（照 init_wms_db.py 的模式）
+└── tests/                   168 个测试，全部离线
 ```
 
 ---

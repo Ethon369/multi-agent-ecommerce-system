@@ -42,11 +42,16 @@ class BaseAgent(ABC):
 SYSTEM_PROMPT = """...输出JSON格式:
 {"segments":["active"], "rfm_score":{"recency":0.8}}..."""
 
-# 2. 行为数据收集: 调用方给了 context 就用它,否则用内置兜底值
-#    (曾有一个 if self.feature_store 分支指向 Redis 实现,
-#     但那个模块从未被实例化,已删除 —— 见 README「哪些数字能信」)
-async def _collect_behavior(self, user_id, context):
-    return {...}  # 内置兜底: 写死的演示数据
+# 2. 行为数据收集: 三源合并, 逐 key 优先级 context > Redis > 内置兜底值
+#    (Redis 特征开关 ECOM_FEATURE_STORE_ENABLED 默认 false —— 关着才用兜底值)
+#    返回 (数据, 来源标记), 来源是【三值】的, 不是两值:
+#        redis        真的读到了 Redis 窗口特征
+#        redis_empty  Redis 读成功, 但这用户从没被上报过(全新用户)
+#        fallback     开关关 / 读失败 / 超时
+#    ⚠️ redis_empty 时【不】回落兜底值 —— 替一个其实已经流失的用户编造
+#       "近 7 天浏览 25 次", 等于把他伪装成活跃用户, 模型就不可能给出 churn_risk
+async def _collect_behavior(self, user_id, context) -> tuple[dict, str]:
+    return {...}, "fallback"  # 开关关闭时的路径: 写死的演示数据 + fallback
 
 # 3. 健壮的解析: 处理LLM可能输出的markdown代码块
 def _parse_profile(self, user_id, raw):
@@ -119,33 +124,16 @@ asyncio.gather里并行。有依赖的用await串行等待。这样总延迟约�
 
 ---
 
-### 5. `python/services/ab_test.py` — A/B测试引擎
+### 5. 关于 A/B 引擎 —— 已删除
 
-**面试考点**: 一致性哈希、Thompson Sampling
+早期这一节讲的是 `python/services/ab_test.py`(哈希分桶 + Thompson Sampling)。
+它已经被**主动删掉**了:这个项目没有真实流量,而 A/B 的全部价值来自真实用户行为,
+用自定义的代理指标去测写死的 mock 数据是"演戏"不是实验。
 
-```python
-# 流量分桶: 保证同一用户始终进入同一组
-def _hash_bucket(self, user_id, experiment_id):
-    raw = f"{user_id}:{experiment_id}"
-    h = hashlib.md5(raw.encode()).hexdigest()
-    return int(h[:8], 16) % self.bucket_count  # 取前8个hex字符
-
-# Thompson Sampling: 动态调整流量
-def assign_thompson(self, user_id, experiment_id):
-    for g in exp.groups:
-        sample = np.random.beta(g.successes, g.failures)
-        # Beta分布: successes越多,采样值越高
-    best = max(samples, key=lambda x: x[0])
-    # 效果好的组被选中的概率更高,但仍有探索空间
-
-# 与传统A/B的区别:
-# 传统: 50/50固定分配,等实验结束统计
-# Thompson: 动态分配,效果好的组自动获得更多流量
-```
-
-**面试怎么说**: "传统A/B测试需要等实验跑完才能得出结论,期间50%的用户
-看到的是较差的策略。Thompson Sampling边实验边优化,效果好的组自动获得
-更多流量,减少了约50%的实验周期。"
+项目真正用来做前后对比的是 [`python/eval/`](../python/eval/) 的评测集
+(12 条 golden set + 确定性断言 + `--baseline`),
+阶段 F 就是靠它把文案 Agent 的推理关掉,实测延迟降 2.9 倍、成本降 4.1 倍。
+详见 [progress.md](progress.md)。
 
 ---
 

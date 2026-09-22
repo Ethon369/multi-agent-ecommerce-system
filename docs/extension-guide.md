@@ -58,22 +58,26 @@ POST /api/v1/recommend                    main.py:73
 
 | 文件 | 作用 | 当前状态 |
 |---|---|---|
-| `services/ab_test.py` | 流量分桶 + Thompson Sampling | 可用，`/api/v1/experiments` 可查 |
 | `services/metrics.py` | Agent/业务指标统计 | 可用，但**未暴露 Prometheus `/metrics` 端点** |
+| `services/feature_store.py` | Redis 实时特征（滑动窗口） | **已接线**：画像 Agent 经 `harness/deps.get_feature_store()` 消费；开关 `ECOM_FEATURE_STORE_ENABLED` 默认 false |
 | `orchestrator/graph.py` | LangGraph 状态图版编排 | 可用，走 `/api/v1/recommend/graph` |
 
-> `services/feature_store.py`（Redis 实时特征，117 行）**曾存在但从未被实例化**，
-> 已于 2026-09-21 的死代码清理中删除。想接真实行为源，见下面第 2 节。
+> `feature_store.py` 原先是**一份没接线的实现**（全仓库没有一处 `FeatureStore(...)`），
+> 所以它攒下的大约 10 个问题从来没有被发现过。本轮它被**重写并真正接上** ——
+> 逐条修掉了那些问题（产出的 key 集合和消费端对不上、`record_behavior` 里调了两次
+> `time.time()`、把 TTL 当窗口用导致 ZSET 无界增长、完全没有 try/except……）。
+> 想换数据源，见下面第 2 节。
 
 ---
 
 ## 2. 代码里"已预留但没接线"的钩子 —— 二次开发的最佳切入点
 
-这些地方作者都留了 `# injected in Phase 2` 或 `# Phase 2: ...` 注释，是设计好等你填的：
+这些地方作者都留了 `# injected in Phase 2` 或 `# Phase 2: ...` 注释，是设计好等你填的
+（**第一条本轮已经填上了** —— Redis 实时特征层已接线）：
 
 | 位置 | 现状 | 你需要做什么 |
 |---|---|---|
-| `agents/user_profile_agent.py` 的 `_collect_behavior()` | 直接返回**写死的演示行为数据**（曾有一个指向 Redis 的分支，因那个模块从未被实例化，已随死代码清理一并删除） | 在 `_collect_behavior()` 里换成一次真实查询 —— 只改这一处。注意用 `redis.asyncio`，见"坑 2" |
+| `agents/user_profile_agent.py` 的 `_collect_behavior()` | **已接线**：三源合并（context > Redis > 内置兜底值），开关关闭时才用写死的演示数据 | 想换行为源（HTTP 上报端点 / Kafka 等）就改这一个方法，其余不用动。注意用 `redis.asyncio`，见"坑 2" |
 | `agents/product_rec_agent.py:74` `self.vector_store = None`；`_recall()` 里 `if self.vector_store: pass`（:105） | 召回走写死的 `MOCK_PRODUCTS`（15 条） | 实现向量检索 / 接 Milvus，替换 mock |
 | `agents/inventory_agent.py:30` `self.db = None`；`_check_stock()` 里 `if self.db: pass`（:82） | 库存直接读 `Product.stock` | 接真实库存表 |
 | `config/settings.py:26` `database_url` | **没有任何 SQLAlchemy 引擎、没有建表脚本** | 用数据库得从零接 |
@@ -132,19 +136,41 @@ POST /api/v1/recommend                    main.py:73
 2. **接 Redis 必须用异步客户端。** 调用处是 `await`，若用 `from redis import Redis`（同步）会直接 `TypeError`：
    ```python
    from redis.asyncio import Redis
-   client = Redis.from_url(settings.redis_url, decode_responses=True)
+   client = Redis.from_url(
+       settings.redis_url,
+       decode_responses=True,
+       protocol=2,          # 见下面的 2a
+   )
    ```
-3. **`/api/v1/experiments/{experiment_id}/outcome` 的 `group`、`success` 是 query 参数**，不是 JSON body（`main.py:136`），用 curl 传 body 会 422。
-4. **`main.py` 里 `reload=True` 只适合开发**，自建部署要去掉（它会额外起一个 reloader 进程）。
-5. **README 的性能数字不可信**：README 称"目标 P99 < 2000 ms"、"延迟优化到 2s"，
+
+   **2a）`protocol=2` 不是可选优化。** 本机 6379 上是原生 **Redis 5.0**，
+   它**不支持 `HELLO` 命令**，而 redis-py 5+ 默认走 RESP3、建连时会先发 `HELLO` ——
+   对 5.0 直接抛 `ResponseError: unknown command 'HELLO'`。
+   RESP2 在 Redis 7.x 上同样合法，所以这不是"只在本机能跑的 hack"。
+
+   **2b）URL 用 `127.0.0.1`，不要用 `localhost`。** `localhost` 会先解析到 IPv6
+   的 `::1`，而本机 Redis **只监听 IPv4** —— 连接先在 `::1` 上挂约 2 秒才回落。实测首次 PING：
+
+   | URL | 首次 PING |
+   |---|---|
+   | `redis://localhost:6379/0` | **2052.3 ms** |
+   | `redis://127.0.0.1:6379/0` | **2.4 ms** |
+
+   这 2 秒大于请求路径的超时（0.5s），会把连接掐断 —— 于是**每次请求都重连、
+   每次都超时**，`source` 永远停在 `fallback`，看起来像"功能没接上"。
+   所以除了改 URL，启动时还要用 `FeatureStore.warmup()` 把这一次代价先付掉
+   （失败只记日志，不阻断启动）。
+3. **`main.py` 里 `reload=True` 只适合开发**，自建部署要去掉（它会额外起一个 reloader 进程）。
+4. **README 的性能数字不可信**：README 称"目标 P99 < 2000 ms"、"延迟优化到 2s"，
    而实测接真实 LLM 后全链路是 **15.8 ~ 16.6 s**。
    > 后续：二次开发时把延迟优化到 **p50 2,788 ms / p95 3,997 ms**（约 17 倍），
    > 但**仍然不是 2 秒**。README 现已修正，并新增了「哪些数字能信」一节。（profile 7.97s + rerank 4.13s + copy 3.74s，三阶段串行累加）。**面试或简历里只写自己测出来的数**。
-6. **`requirements.txt` 缺 pytest**，`tests/` 默认跑不了（只有一个 `test_ab_test.py`）。
-7. **docker-compose 里的 Redis / Milvus / MySQL 当前代码都没用到**，只想跑通不必起容器。
-8. **三语言实现共享同一套架构设计，但代码是各自独立的**，改 Python 版不会同步到 Java / Go。
-9. **CMD 默认 GBK**：用 curl 传含中文的 JSON 会乱码导致 422 → 改用 `http://localhost:8000/docs` 页面测，或把 JSON 写进文件用 `-d @req.json`。
-10. **`sys.path` 依赖运行目录**：必须在 `python\` 下启动，否则 `.env` 与本地包（`config`/`agents`/...）都找不到。
+5. **docker-compose 里的 Redis / Milvus / MySQL：只有 Redis 真被用到，而且不需要 docker**
+   —— 本机原生 Redis 也行（开关默认关）。Milvus / MySQL 依然**代码里没 import**，
+   只想跑通不必起容器。
+6. **三语言实现共享同一套架构设计，但代码是各自独立的**，改 Python 版不会同步到 Java / Go。
+7. **CMD 默认 GBK**：用 curl 传含中文的 JSON 会乱码导致 422 → 改用 `http://localhost:8000/docs` 页面测，或把 JSON 写进文件用 `-d @req.json`。
+8. **`sys.path` 依赖运行目录**：必须在 `python\` 下启动，否则 `.env` 与本地包（`config`/`agents`/...）都找不到。
 
 ---
 
@@ -158,10 +184,12 @@ POST /api/v1/recommend                    main.py:73
 - 压延迟：缓存 + 提示词瘦身 + 把 Phase3 与 Phase2 合并并行，给出"优化前 15.8s → 优化后 X s"的前后对比
 
 **主线 B：真实数据层 + 检索（工程完整度最强）**
-- SQLAlchemy + Redis 特征 + 向量召回，全面替换 mock 数据
+- SQLAlchemy + 向量召回，全面替换 mock 数据（**Redis 特征已接上** ——
+  可以照它的样子做"可选依赖 + 三值降级"：开关默认 false、读失败不编数据、
+  source 标出是降级还是真没数据）
 - 为召回做**离线评测**：构造 N 个用户，出 recall@k / 命中率，形成可复现的评测脚本
 
-**叙述建议**：README 自带的"简历写法"里有一批未经实测的数字（CTR +15%、文案点击率 +23% 等），这些**不要照抄**——被追问"你怎么测的 A/B"会非常被动。你手上有真实可复现的延迟数据与降级链路，比那些数字更经得起问。
+**叙述建议**：README 自带的"简历写法"里有一批未经实测的数字（CTR +15%、文案点击率 +23% 等），这些**不要照抄**——本项目没有线上流量，这类指标根本无从测起，被追问"这些数字怎么来的"会非常被动。你手上有真实可复现的延迟数据、降级链路和 `python/eval/` 的离线评测集，比那些数字更经得起问。
 
 ---
 

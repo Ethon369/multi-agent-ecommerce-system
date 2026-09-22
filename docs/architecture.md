@@ -33,10 +33,6 @@
 │  ┌─────────────────────────────────┐                  │
 │  │ 营销文案Agent: 个性化文案生成    │                  │
 │  └────────────────┬────────────────┘                  │
-│                   ▼                                   │
-│  ┌─────────────────────────────────┐                  │
-│  │ A/B测试引擎: 实验分组 + 指标     │                  │
-│  └────────────────┬────────────────┘                  │
 └───────────────────┼──────────────────────────────────┘
                     ▼
               个性化响应
@@ -50,6 +46,12 @@
 | 商品推荐 | 多路召回+LLM重排 | UserProfile, num_items | Product[] | Milvus, LLM | 8s |
 | 营销文案 | 模板选择+LLM生成+合规 | UserProfile, Product[] | Copy[] | LLM | 10s |
 | 库存决策 | 库存校验+预警+限购 | Product[] | available_ids, alerts | MySQL/WMS | 5s |
+
+> ⚠️ 表里的 **Redis Feature Store 是可选依赖**（`ECOM_FEATURE_STORE_ENABLED` 默认 false）：
+> 打开时画像 Agent 读 Redis 的滑动窗口特征；关闭 / 读失败 / 超时时用内置兜底行为数据，
+> 并在结果里用**三值 `source`** 标出来（`redis` / `redis_empty` / `fallback`）。
+> `redis_empty` 是"读成功，但这用户从没被上报过"（全新用户），**不**回落兜底值 ——
+> 替一个其实已经流失的用户编造"活跃"行为，模型就不可能给出 `churn_risk`。
 
 ## 3. 数据流
 
@@ -65,9 +67,6 @@ Redis (Feature Store)          Milvus (向量库)         MySQL (业务数据)
                   │
                   ▼
             营销文案Agent → LLM (MiniMax M2.7)
-                  │
-                  ▼
-            A/B测试引擎
                   │
                   ▼
              API Response
@@ -106,7 +105,7 @@ Redis (Feature Store)          Milvus (向量库)         MySQL (业务数据)
 ### 5.2 降级策略
 | Agent | 降级方案 |
 |-------|---------|
-| 用户画像 | 返回默认画像(active用户) |
+| 用户画像 | 用内置兜底行为数据（`source=fallback`，confidence 从 0.95 降到 0.7） |
 | 商品推荐 | 返回热销商品列表 |
 | 营销文案 | 返回通用模板文案 |
 | 库存决策 | 标记所有商品为可用 |
@@ -130,9 +129,10 @@ Redis (Feature Store)          Milvus (向量库)         MySQL (业务数据)
 
 ### 可扩展点
 1. **新Agent**: 只需实现BaseAgent接口,注册到Supervisor
-2. **新实验**: ABTestEngine.register_experiment()
-3. **新召回策略**: 在ProductRecAgent._recall()中添加
-4. **新文案模板**: 在PROMPT_TEMPLATES字典中添加
+2. **新召回策略**: 在ProductRecAgent._recall()中添加
+3. **新文案模板**: 在PROMPT_TEMPLATES字典中添加
+4. **策略验证**: 用 `python/eval/` 评测集跑 `--baseline` 前后对比
+   （本项目没有线上流量,所以不做 A/B 实验 —— 详见 progress.md）
 
 ### 生产化路线
 1. Redis Cluster → 支持百万级用户特征

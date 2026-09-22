@@ -14,8 +14,7 @@
 | 说法 | 实际情况 |
 |---|---|
 | 端到端延迟 **P99 < 2s** | 从未达到。实测 **p95 是 3,997 ms** |
-| 推荐 **CTR 提升 15%** | 没有任何数据支撑 —— A/B 引擎返回的 `config` 从未被读取，实验目前不影响行为 |
-| **Redis Sorted Set** 实时特征 / 特征更新 < 100ms | **从未实现**（曾有一份未接线的实现，已删除）。画像走的是内置兜底数据 |
+| **Redis Sorted Set** 实时特征 / 特征更新 **< 100ms** | 特征层**已经实现了**（滑动窗口 + 三值降级，开关默认关闭）—— "Redis 是假的"这个说法本轮起作废。但 **"< 100ms" 没有实测依据**，别写 |
 | **Milvus 向量检索** / 百万级 ANN 召回 < 50ms | `pymilvus` 在依赖里，但**代码里从未 import** |
 | **MySQL** | 库存现在走 **SQLite + MCP** |
 | **Java / Go 三语言实现** | 已删除，只保留 Python |
@@ -30,6 +29,17 @@
 **两版之间最重要的差别**：新版**主动展示了两处"我否决/推翻了自己"**
 （否决现成 MCP Server、按实测数据推翻自己的推理决策）。
 这比任何正向指标都更能证明工程判断力 —— 而且面试官没法用"你怎么测的"问倒你。
+
+**补充（2026-09-22）：Redis 实时特征现在可以写了。** 它从"一份没接线的死代码"变成了
+真的接上的可选数据源。写的时候注意两点，否则还是会被问穿：
+
+1. **说清开关默认关闭** —— `ECOM_FEATURE_STORE_ENABLED` 默认 false，
+   关闭时行为与接入前完全一致（零回归）；
+2. **说清三值降级** —— 读接口返回 `redis` / `redis_empty` / `fallback` 三态，
+   Redis 挂掉时仍返回 HTTP 200（实测 3/3）且 confidence 从 0.95 下调到 0.7。
+
+可参照 [interview-guide.md](interview-guide.md) 顶部和 README 里那两条写好的 bullet。
+**别写"特征更新延迟 < 100ms"** —— 这个数字从来没有实测支撑。
 
 ---
 
@@ -59,7 +69,7 @@ GitHub: github.com/bcefghj/multi-agent-ecommerce
 • 基于MCP SDK v2实现Server+Client+Host三端:自建2个Server、
   库存Agent作为Client消费WMS、并实现多轮tool-calling loop的运营Copilot
 
-• 构建评测闭环(10条golden set+确定性门禁+非门禁LLM裁判),
+• 构建评测闭环(12条golden set+确定性门禁+非门禁LLM裁判),
   全链路p50从48015ms降至2788ms(约17倍),单次成本降至$0.0006
 
 • 集成LLM实现个性化营销文案生成,5套Prompt模板覆盖新客/VIP/
@@ -89,9 +99,6 @@ GitHub: github.com/bcefghj/multi-agent-ecommerce
 • 数据工程: Redis Feature Store支持实时特征(滑动窗口),
   离线+在线特征合并,Milvus向量检索支持百万级商品ANN召回(<50ms)
 
-• 实验平台: Thompson Sampling A/B引擎,支持三层实验正交,
-  实验周期较传统A/B缩短50%,推荐CTR提升15%
-
 • 多语言交付: Python/Java/Go三语言实现+Docker一键部署,
   降低跨团队技术栈接入门槛
 ```
@@ -101,7 +108,7 @@ GitHub: github.com/bcefghj/multi-agent-ecommerce
 ## 简历注意事项
 
 ### DO（推荐做法）
-1. **量化成果**: CTR提升15%、延迟<2s、成功率99%
+1. **量化成果**: 全链路p50 48015ms→2788ms、单次成本$0.0006、评测通过率12/12
 2. **突出架构决策**: 为什么选Supervisor而不是Handoffs
 3. **体现工程能力**: 重试/超时/降级/监控
 4. **关联业务价值**: 缺货推荐率从12%降至0.5%
@@ -121,7 +128,7 @@ GitHub: github.com/bcefghj/multi-agent-ecommerce
 重点: Multi-Agent架构、ReAct模式、Prompt工程、Agent稳定性
 
 ### 推荐系统工程师
-重点: 多路召回、LLM重排、实时特征、A/B测试
+重点: 多路召回、LLM重排、实时特征、离线评测闭环
 
 ### 后端工程师
 重点: 并行编排(asyncio/CompletableFuture/goroutine)、

@@ -1,11 +1,15 @@
 # 二次开发进度总览
 
-> 最后更新：2026-09-20
+> 最后更新：2026-09-22
 > 目标：投「AI 应用 / Agent 开发岗（校招）」，突出 **harness 工程能力** 与 **MCP 双侧**
 > 原始计划：`docs/mcp-integration-prd.md`（MCP）、`docs/extension-guide.md`（二次开发指南）
 
 **一句话现状**：**七个阶段全部完成**。harness 运行时保障层、MCP 三端（Server + Client + Host）、
 评测闭环、诚实化全部落地，每一项都有实测证据。
+
+**最近一轮（2026-09-22）**：把 Redis 实时特征层从"假的"变成了"真的" ——
+它原先**根本没接线**（全仓库没有一处 `FeatureStore(...)`），现在被**重写并接进**画像 Agent
+（开关默认关闭）。详见文末「本轮」。
 
 ---
 
@@ -16,7 +20,7 @@
 | **M0** | 基线固化 | ✅ | 基线 p50 = **48,015 ms**；`pytest` 进依赖；Java/Go 删除已提交 | — |
 | **M0b** | tool-calling 探针 | ✅ | 模型支持原生 tool calling；**langchain-core 原生认 MCP schema，适配器代码量为 0** | — |
 | **M1** | 请求级追踪 | ✅ | `request_id` 贯穿；`agent.retry` 事件上线（并据此推翻我一个错误结论） | — |
-| **M1.5** | 评测运行器 | ✅ | 10 条 golden set + 确定性门禁 + `--baseline` 对比 | [06](stages/06-eval.md) |
+| **M1.5** | 评测运行器 | ✅ | 10 条 golden set（2026-09-22 增至 12 条，新增两条 Redis 用例）+ 确定性门禁 + `--baseline` 对比 | [06](stages/06-eval.md) |
 | **M2** | 真超时 + 熔断 | ✅ | 故障注入 4/4 HTTP 200；熔断第 3 次请求 **0ms** 短路 | — |
 | **M3** | token / 成本账本 | ✅ | 按 Agent 分摊；实测定位出文案占 89% 成本 | [02](stages/02-token-accounting.md) |
 | **M4** | 工具层 + 组合根 | ✅ | `ToolSpec`/`ToolRegistry` + `deps.py` 组合根（修掉实例分裂 bug） | [03](stages/03-tool-registry.md) |
@@ -38,7 +42,7 @@
 
 | # | 交付物 | 状态 | 说明 |
 |---|---|---|---|
-| D1 | `mcp_servers/recommend_server.py` | ✅ | 4 个工具，协议壳零业务逻辑；返回扁平结构（信息在顶层，对模型更友好） |
+| D1 | `mcp_servers/recommend_server.py` | ✅ | 2 个工具，协议壳零业务逻辑；返回扁平结构（信息在顶层，对模型更友好） |
 | D2 | `mcp_servers/wms_server.py` | ✅ | 4 工具 + 1 resource，stdio |
 | D3 | `mcp_servers/init_wms_db.py` | ✅ | 15 商品，**9 个与目录库存故意不同**（A5 的根据） |
 | D4 | `services/mcp_client.py` | ✅ | 每次调用短连接，永不抛异常给调用方 |
@@ -60,7 +64,7 @@
 | A4 | **降级：MCP 挂掉仍 200** | ✅ | `source="fallback"`，商品文案照常返回 |
 | A5 | **契约：证明真的走了 MCP** | ✅ | 见下方「A5 证据」 |
 | A6 | 回归探针 | ⚠️ **未做** | PRD 说探针归档在该目录，但里面**没有** `probe_recommend.py`。
-替代：`eval/runner.py` 的 10 条用例已覆盖回归 |
+替代：`eval/runner.py` 的 12 条用例已覆盖回归 |
 | A7 | 开关关闭时零影响 | ✅ | 关时不构造客户端，行为与集成前一致 |
 
 ---
@@ -121,6 +125,28 @@
 | MCP 正常 | 200 | `"mcp"` | 3 |
 | MCP 坏掉 | **200** | **`"fallback"`** | 4 |
 
+### 实时特征（Redis，2026-09-22）
+
+前置：`scripts/seed_behavior.py --reset` 灌三个种子用户，端到端实测：
+
+| 用户 | `data.source` | 画像给出的 segments | 说明 |
+|---|---|---|---|
+| `u_seed_active` | `redis` | `['active','high_value']` | 窗口内有数据；`活跃时段: 上午8-10点` 来自真实算出的 `active_hours` |
+| `u_seed_churn` | `redis` | `['churn_risk']` | 45 天前来过、窗口内为空 —— 旧行为下他会被喂写死的"近 7 天浏览 25 次"，**永远出不了 `churn_risk`** |
+| `u_seed_new` | `redis_empty` | `['new_user']` | 从没被上报过，走冷启动分支 |
+
+降级实测（把 Redis 指向死端口）：
+
+| 场景 | HTTP | `data.source` | confidence |
+|---|---|---|---|
+| Redis 正常 | 200 | `redis` | 0.95 |
+| Redis 指向死端口 | **200（3/3）** | **`fallback`** | 0.7 |
+
+评测：**12/12 通过**（含 rec_011 / rec_012 两条 Redis 用例；开关关闭时这两条自动跳过）。
+
+> 边界：`redis_empty` 时**不**回落写死的兜底值。替用户编造行为不是降级，是造假 ——
+> 一个其实已经流失的用户如果被喂上"近 7 天浏览 25 次"，模型不可能给出 churn_risk。
+
 ### A5 证据（去掉 LLM 变量，直接对比 `InventoryAgent`）
 
 ```
@@ -134,7 +160,8 @@ MCP 关  15/15 可用   source=fallback
 
 ### 工程指标
 
-- 测试：**5 → 144**（另有 1 条默认跳过的慢速完整链路）
+- 测试：**5 → 144**（另有 1 条默认跳过的慢速完整链路）；2026-09-21 删掉 A/B 引擎及其 5 条测试后为 **139**；
+  2026-09-22 接上 Redis 特征层后为 **168 passed, 1 skipped**
 - commit：10 个（每个都是独立可验证的单元）
 - MCP 单次调用成本：**约 1,150 ms**（短连接重启子进程，`import mcp` 占约 1 秒）
 
@@ -164,7 +191,7 @@ MCP 关  15/15 可用   source=fallback
 | 模块 | 生产引用 | 判定 | 它换来的是什么 |
 |---|---|---|---|
 | `build_chat_model` | 6 | **承重** | 10.4 倍延迟优化的载体 |
-| `get_agents` / `get_ab_engine` / `get_supervisor` / `get_metrics_collector` | 8 / 6 / 2 / 2 | **承重** | 修掉跨路径实例分裂（熔断与实验结论不同步） |
+| `get_agents` / `get_supervisor` / `get_metrics_collector` | 8 / 2 / 2 | **承重** | 修掉跨路径实例分裂（熔断状态各算各的） |
 | `request_context` / `scope` / `bind` / `new_request_id` | 4 / 4 / 3 / 6 | **承重** | request_id 贯穿全部 Agent 日志 |
 | `get_runtime` | 5 | **承重** | 熔断生效 |
 | `CircuitBreaker` / `AgentRuntime` | 0 直接（经 `get_runtime` 间接） | **承重** | 同上；纯逻辑，最厚的单测在这 |
@@ -192,8 +219,8 @@ MCP 关  15/15 可用   source=fallback
 |---|---|
 | ~~返回商品数少于 `num_items`~~ | ✅ **已修复**（阶段 A） |
 | ~~`models/schemas.py` 的 `agent_results` 子类字段被截断~~ | ✅ **已修复**（2026-09-21）：改用 `SerializeAsAny[AgentResult]`，端到端实测四个 Agent 的专属字段全部出现 |
-| ~~`services/feature_store.py`（117 行）从未被实例化~~ | ✅ **已删除**（2026-09-21 死代码清理），README 的「Redis 实时特征」也随之撤下 |
-| A/B 的 `config` 仍无人消费 | 实验**不影响任何行为**（`assign_thompson` 也从未被调用） |
+| ~~`services/feature_store.py` 是一份死代码（没接线）~~ | ✅ **已接线**（2026-09-22）：不是恢复原样，而是**重写**（逐条修掉约 10 个从没跑过所以从没验证过的问题）后接进画像 Agent。详见文末「本轮」 |
+| ~~A/B 的 `config` 仍无人消费~~ | ✅ **已删除**（2026-09-21）：A/B 引擎没有真实流量可测，是没接线的冗余实现；前后对比改用 `python/eval/` 的评测集 |
 | ~~README 未实测数字~~ | ✅ **已清理**（阶段 G），README 顶部新增「哪些数字能信」 |
 | `agents/base_agent.py` 的 `_call_count`/`_error_count` | 保留但已不是健康状态来源，容易误导读者 |
 | `mcp[cli]` 未装 | A1（`mcp dev`）无法验证 |
@@ -281,3 +308,40 @@ product_rec:  candidate_count=15 reranked=5       ← 但重排是从全部 15 �
 3. **删掉 50 行投机代码** —— `harness/trace.py` 的 `span()` 与 `configure_logging()`，
    生产代码 0 引用。`trace.py` 159 → 112 行，测试 78 → 75。
 4. **发现 6.1 那个 bug** —— 在验证"删代码有没有弄坏东西"时实测发现的。
+
+---
+
+## 附：本轮（2026-09-22）做了什么 —— Redis 实时特征层接线
+
+**起因**：README 的「❌ 不可信的」表里长期挂着一行"Redis Sorted Set 实时特征 —— 从没实现"。
+上一轮的处理是把它**删掉**（死代码清理），这一轮改成**做出来**。
+
+**做了什么**：
+
+1. **`services/feature_store.py` 重写**（不是恢复原样）。原版从没跑过、也从没被验证过，
+   攒了约 10 个问题，逐条修掉：产出的 key 集合和消费端对不上、`record_behavior` 里调了两次
+   `time.time()`（payload 的 ts 和 zset 的 score 是两个瞬间）、金额取自 payload 里根本不存在的字段、
+   用 `len(窗口内全部成员)` 代替 `ZCOUNT`、把 TTL 当窗口用导致 ZSET 无界增长、
+   完全没有 try/except（Redis 一抖动就 500）…… 全文见该文件的模块 docstring。
+2. **新增 `python/scripts/seed_behavior.py`** —— 灌确定性行为种子，照 `mcp_servers/init_wms_db.py`
+   的模式：显式跑一次、种子确定、**跑完用"消费端会看到的那份数据"读回来自证**。
+3. **`user_profile_agent._collect_behavior()` 改成三源合并**（context > Redis > 内置兜底值），
+   并返回**三值** `source`（`redis` / `redis_empty` / `fallback`）。
+4. **`harness/deps.py` 新增 `get_feature_store()`** —— 和 MCP 客户端同一个口径：
+   **开关关闭时返回 None**，连 redis 客户端都不构造（关闭时零新增失败面）。
+5. **新增 4 个配置项**（`config/settings.py` + `python/.env.example`），
+   开关 `feature_store_enabled` **默认 false**。
+6. **评测新增 2 条用例** rec_011（Redis 路径真被走到）/ rec_012（全新用户不被喂假数据），
+   用 `requires_feature_store` 标记 —— 开关关闭时自动跳过，默认配置下的通过率不受影响。
+
+**两个坑（值得记住，都写进了 `settings.py` / `.env.example` 的注释）**：
+
+- 本机 Redis 是 **5.0**，**不支持 `HELLO`**，而 redis-py 5+ 默认走 RESP3、建连时先发 HELLO
+  → 客户端必须显式 `protocol=2`（RESP2 在 7.x 上同样合法，不是本机专用的 hack）。
+- `localhost` 会先解析到 IPv6 的 `::1`，而本机 Redis **只监听 IPv4** → 首次连接挂约 2 秒才回落。
+  实测首次 PING：`localhost` **2052.3 ms** vs `127.0.0.1` **2.4 ms**。
+  这 2 秒大于请求路径的 0.5s 超时，会把连接掐断 → **每次请求都重连、每次都超时 → 永久降级**，
+  看起来像"功能没接上"。所以 URL 必须写 `127.0.0.1`，且启动时 `warmup()` 预热。
+
+**结果**：测试 139 → **168 passed, 1 skipped**；评测 **12/12**；
+README 的「❌ 不可信的」表**少了一行**（对照表变短 = 项目变干净）。

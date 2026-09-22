@@ -31,7 +31,7 @@
 
 | 方向 | 内容 | 价值 |
 |---|---|---|
-| **B（服务端）** | 把推荐 / 实验 / 指标能力封装为 MCP Server，任何 MCP Host 可直接调用 | 让项目"可被 AI 消费"，是 MCP 最主流的用法 |
+| **B（服务端）** | 把推荐 / 指标能力封装为 MCP Server，任何 MCP Host 可直接调用 | 让项目"可被 AI 消费"，是 MCP 最主流的用法 |
 | **A1（客户端）** | 库存 Agent 通过 MCP 客户端调用一个 SQLite 版 WMS Server，落地作者预留的 `self.db` 钩子 | 真正用掉作者的预留设计，且是**可降级**的（见决策 5） |
 
 **为什么优先 B：** 服务端方向是"增值"（新增能力），客户端方向是"替换"（改已跑通的库存逻辑，有回归风险）。先用低风险方向把 MCP 基础设施（依赖、传输、生命周期、测试手法）立起来，再动核心链路。
@@ -81,9 +81,7 @@
         │  D1  recommend_server                │
         │  tools:                              │
         │   - recommend_products               │
-        │   - get_experiments                  │
         │   - get_metrics                      │
-        │   - record_experiment_outcome        │
         └────────────────┬─────────────────────┘
                          │ 直接 import 复用业务代码
                          ▼
@@ -106,7 +104,7 @@
                                  └──────────────────────────┘
 ```
 
-**关键点：两个 Server 都不重复实现业务逻辑。** D1 直接 import 复用 `SupervisorOrchestrator` / `ABTestEngine` / `MetricsCollector`（MCP Server 只是换个协议壳）；D2 是唯一新增的业务逻辑（真实的库存表）。
+**关键点：两个 Server 都不重复实现业务逻辑。** D1 直接 import 复用 `SupervisorOrchestrator` / `MetricsCollector`（MCP Server 只是换个协议壳）；D2 是唯一新增的业务逻辑（真实的库存表）。
 
 ### 3.2 一次"带 MCP 的推荐请求"的数据流
 
@@ -257,19 +255,20 @@ recommend_products(
 ) -> dict
 ```
 - 说明：完整四 Agent 编排。**实测延迟 15.8–16.6 秒**（真实 LLM），不是 README 宣称的 2 秒。
-- 返回：`{request_id, products[], marketing_copies[], experiment_group, total_latency_ms}`
+- 返回：`{request_id, products[], marketing_copies[], total_latency_ms}`
 - **设计注意：** 显式构造扁平返回结构，不直接返回 `RecommendationResponse.model_dump()`。
   **原始理由**是绕开 pydantic 的子类字段截断（当时 `agent_results` 声明为 `dict[str, AgentResult]`）—— 该 bug 已于 2026-09-21 修复。
   **保留扁平结构的现行理由**：信息都在顶层，对 Host 侧模型更友好（不用猜嵌套），也顺带挡掉 `latency`/`confidence` 这类运维细节，省 token。
 - 工具描述里必须写明"约 16 秒"，引导 Host 侧模型正确预期，避免被判定为超时。
 
 ```python
-get_experiments() -> dict                      # 复用 main.py:103-123 的逻辑
 get_metrics() -> dict                          # 复用 main.py:126-132 的逻辑
-record_experiment_outcome(experiment_id: str, group: str, success: bool) -> dict
 ```
 
-**写操作只保留 `record_experiment_outcome` 一个**，因为它是幂等安全的（只累加计数）。其余全部只读，避免 MCP Host 侧的模型误触发副作用。
+**全部是只读工具**，避免 MCP Host 侧的模型误触发副作用。
+> 原设计里还有 `get_experiments` 与 `record_experiment_outcome`（唯一写操作）两个工具，
+> 它们随那个没接线的 A/B 引擎一并删除 —— 项目没有真实流量，A/B 测不出东西，
+> 前后对比改用 `python/eval/` 的离线评测集。
 
 ### 4.2 D2 `wms_server`
 
@@ -399,7 +398,7 @@ StdioServerParameters(
 它要 16 秒。保留可以完整展示"MCP 封装复杂多 Agent 编排"，但 Host 侧体验差（多数 Host 有 30–60s 工具超时，能过但很慢）。
 - **保留**：完整度优先
 - **改为异步任务模式**（先返回 `request_id`，再查结果）：体验好，但工作量翻倍
-- **移除**：只保留 `get_experiments` / `get_metrics` 等快工具
+- **移除**：只保留 `get_metrics` 这类快工具
 
 > 建议：**先保留**，在工具描述里明确标注耗时。异步模式作为后续演进。
 
@@ -498,7 +497,7 @@ async with Client(wms_mcp) as client:
 |---|---|---|---|
 | `server-time` | Python（本机需先装 uv，或 `pip install mcp-server-time`） | 营销文案里的"限时/当季/节日"话术目前靠 LLM 猜时间；接真实时间可让话术有依据 | **建议** |
 | `server-fetch` | `npx -y @modelcontextprotocol/server-fetch` | 营销 Agent 抓取商品页/竞品信息提炼卖点 | **建议（需评估外网与合规）** |
-| `server-memory` | `npx -y @modelcontextprotocol/server-memory` | 跨会话用户长期偏好（知识图谱）。可一并承担"用户长期偏好"这一职责（本项目原先预留的 Redis 特征层从未接线，已删除），别重复建设 | 可选 |
+| `server-memory` | `npx -y @modelcontextprotocol/server-memory` | 跨会话用户长期偏好（知识图谱）。注意与本项目**已接线的 Redis 特征层**（`services/feature_store.py`）职责重叠：那层管的是"近期行为窗口"，知识图谱管的是"长期偏好"，可以并存但别重复建设 | 可选 |
 | `server-everything` | 官方参考 | 学习 MCP 的工具/资源/提示词三类能力全貌 | 学习用 |
 | `server-sequentialthinking` | 官方参考 | 复杂推理规划 | **不建议**：本项目已 16 s 延迟，再加推理链更慢；四 Agent 是确定性编排 |
 | `server-filesystem` | 官方参考 | 文件读写 | **不建议**：项目只有 `image_url` 字段，无真实图片文件 |

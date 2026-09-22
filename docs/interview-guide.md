@@ -11,12 +11,15 @@
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • 设计并实现基于Supervisor模式的多Agent协同架构,含用户画像、商品推荐、
   营销文案、库存决策4个专业Agent,采用并行分发+聚合的编排模式
-• 基于Redis Sorted Set实现实时用户特征工程(RFM模型+行为序列),
-  特征更新延迟<100ms,支持1h/24h/7d多时间窗口滑动计算
+• 基于Redis Sorted Set实现实时用户特征层(member=商品ID天然去重、
+  score=服务端时间戳、窗口在读取时用score区间强制),支持近7天浏览/
+  近30天购买两个滑动窗口;读接口三值来源(redis/redis_empty/fallback),
+  Redis不可用时自动降级并把confidence从0.95下调到0.7。
+  **开关默认关闭,关闭时行为与接入前完全一致**
 • 集成LLM实现个性化营销文案生成,基于用户画像动态切换5套Prompt模板,
   文案合规率100%(广告法敏感词自动过滤)
-• 设计流量分桶+Thompson Sampling A/B测试引擎,支持Agent/模型/Prompt
-  三层实验,推荐CTR提升15%
+• 构建离线评测闭环(12条golden set+确定性断言门禁+--baseline前后对比),
+  并据此推翻了自己"文案保留推理"的判断——实测延迟降2.9倍、成本降4.1倍
 • 提供Python(LangGraph)/Java(Spring AI)/Go(goroutine)三语言实现
 
 技术栈: LangGraph · Spring AI · Go · Redis · Milvus · FastAPI · Docker
@@ -50,22 +53,24 @@
 >    - Phase 2: LLM重排和库存校验并行执行
 >    - Phase 3: 基于前两步结果生成个性化文案
 >
-> 3. **实时特征工程**: 用Redis Sorted Set存储用户行为序列(score=时间戳),
->    支持1h/24h/7d滑动窗口实时特征计算。RFM模型量化用户价值。
+> 3. **实时特征工程**: 用Redis Sorted Set存用户行为序列(member=商品ID,
+>    score=服务端生成的时间戳),支持近7天浏览/近30天购买两个滑动窗口。
+>    读接口返回**三值来源**(redis/redis_empty/fallback),空数据不回落兜底值 ——
+>    不给一个其实已经流失的用户编造"活跃"行为。
 >
 > 4. **个性化文案**: 设计5套Prompt模板(新客/VIP/价格敏感/活跃/流失风险),
 >    根据用户画像自动选择,LLM生成后经过广告法合规校验。
->
-> 5. **A/B测试引擎**: 用户ID哈希分桶保证一致性,Thompson Sampling算法
->    动态分配流量,支持Agent级别的策略对比。
 
 **R（Result/结果）**
 
-> - 推荐CTR提升15%,个性化文案点击率比通用文案高23%
 > - 系统端到端延迟 p50 约 2.8s、p95 约 4.0s（4 个 Agent 并行执行）
 >   ⚠️ 本文档别处若提到"P99 < 2s"，那是早期目标值，从未达到。
 > - 库存校验后,推荐缺货商品率从12%降至0.5%
 > - 提供了Python/Java/Go三语言实现,方便不同技术栈的团队使用
+>
+> ⚠️ 不要引用"推荐CTR提升15%、文案点击率提升23%"这类数字 ——
+> 这个项目**没有线上流量**,这类指标无从测起（那些数字原本挂在 A/B 引擎上,
+> 而 A/B 引擎已删除，见 Q10）。
 
 ---
 
@@ -74,8 +79,8 @@
 > 我做了一个多Agent电商推荐系统,核心是4个专业Agent并行协作:
 > 用户画像Agent分析实时特征,商品推荐Agent做多策略召回+LLM重排,
 > 营销文案Agent根据用户分群生成个性化文案,库存Agent做实时校验和限购决策。
-> 用Supervisor模式编排,支持A/B测试动态调优。
-> 最终推荐CTR提升15%,端到端延迟P99小于2秒。
+> 用Supervisor模式编排,并用离线评测集(python/eval/)做策略的前后对比。
+> 最终全链路延迟 p50 从 48s 降到 2.8s。
 
 ---
 
@@ -183,40 +188,49 @@ Observation: 获取工具返回结果
 **Q9: 实时特征怎么做的?Redis数据结构选型?**
 
 ```
-Redis Sorted Set: ZADD behavior:{user_id}:view {timestamp} {item_json}
-                  ZRANGEBYSCORE behavior:{user_id}:view {now-3600} +inf
+Redis Sorted Set: ZADD             fs:behavior:{user_id}:view {now} {item_id}
+                  ZCOUNT           fs:behavior:{user_id}:view {now-7d} +inf
+                  ZREVRANGEBYSCORE fs:behavior:{user_id}:view +inf {now-7d}
 ```
 
 选择Sorted Set的原因:
-- score=时间戳,天然支持时间范围查询
-- 滑动窗口: 查最近1h/24h/7d的行为,O(log N + M)
-- 自动去重: 同一行为不会重复记录
+- **member=商品ID**：同一商品重复触达只更新score —— **天然去重**，
+  "最近看过什么"是真的最近，而不是"最近写入过什么"
+- score=**服务端生成**的时间戳，天然支持时间范围查询
+- 滑动窗口（近7天浏览 / 近30天购买）：O(log N + M)
 
-特征计算:
-- view_count_1h: ZCOUNT行为数
-- click_through_rate: click/view
-- 离线标签(T+1) + 在线标签(实时) 合并
+三个关键设计（都是踩过坑才定的）:
+- **窗口靠读取时的score区间强制，TTL只是GC。** `EXPIRE` 每次写入都刷新，
+  拿它当窗口会让活跃用户的ZSET无界增长 —— 那是内存泄漏，不是"数据留久点"。
+  真正阻止增长的是写入时的 `ZREMRANGEBYSCORE` 修剪。
+- **score必须服务端生成。** 本机Redis是5.0，没有 `ZADD GT`，拿不到"更大才更新"
+  的服务端语义；而调用方传毫秒时间戳（JS的 `Date.now()` 是经典错误）会让窗口
+  恒为空 —— 一个单位错误会**静默**变成一次对用户行为的编造。
+- **读失败要和"没数据"分开。** 读接口返回三态：`None`=读失败、`{}`=这用户从没被
+  上报过、`{...}`=有数据；消费端据此把 `source` 标成
+  `fallback` / `redis_empty` / `redis`，运维上才分得清"新用户来了"和"Redis挂了"。
 
-**Q10: A/B测试引擎的设计?**
+特征字段: recent_views、view_count_7d、purchase_count_30d、avg_order_amount、
+active_hours、days_since_last_visit。
+⚠️ 喂给LLM的 recent_views 是**类目**不是商品ID —— 模型手里没有商品目录，
+喂ID它只会回一个同样无效的 `preferred_categories`，类目加权静默失效。
+所以ID→类目的join放在agent层，feature_store保持通用（只懂窗口和计数）。
 
-三层设计:
+**Q10: 这个项目为什么不做A/B测试?**
+
+因为这个项目**没有真实流量**。A/B 的全部价值来自真实用户行为——没有流量就
+什么都测不出;而用自定义的代理指标去测写死的 mock 数据,是"演戏"不是实验。
+
+项目真正用来做前后对比的是**离线评测集**:
 ```
-1. 流量分桶: MD5(user_id + experiment_id) % 100
-   - 保证同一用户始终进入同一组(一致性)
-   - 不同实验独立分桶(正交性)
-
-2. 实验层级:
-   - Agent层: 对比不同Agent实现(规则 vs LLM)
-   - 模型层: 对比不同LLM(GPT-4o vs MiniMax)
-   - Prompt层: 对比不同文案模板
-
-3. MAB动态调优: Thompson Sampling
-   - 每组维护Beta分布(successes, failures)
-   - 每次采样选择期望收益最高的组
-   - 自动将流量倾斜到效果好的组
+python/eval/  12 条 golden set + 确定性断言门禁 + --baseline 前后对比
 ```
+阶段 F 就是靠它做了一次基于证据的结论反转:把文案 Agent 的推理关掉,
+实测延迟降 2.9 倍、成本降 4.1 倍。
 
-vs 传统A/B: Thompson Sampling减少50%实验周期,且不影响统计显著性。
+早期版本确实写过一个 A/B 引擎(哈希分桶 + Thompson Sampling),
+但它是同一个能力的、更复杂的、没接线的冗余实现,**已删除**——
+删掉之后,项目里每个 feature 都是真的。
 
 **Q11: 为什么选择LangGraph而不是CrewAI/AutoGen?**
 
@@ -297,7 +311,7 @@ LLM重排优势:
 商品冷启动:
 1. 新品标签自动加权
 2. 基于商品属性(类目/价格/品牌)做内容召回
-3. "新品加权"在A/B测试中验证效果
+3. "新品加权"用离线评测集验证效果(本项目没有线上流量,不做 A/B)
 
 **Q18: 用户画像更新的时效性?**
 
@@ -353,7 +367,7 @@ LLM重排优势:
 - **转化率(CVR)**: 点击后的购买比例
 - **多样性**: 不同用户看到的文案重复率
 
-通过A/B测试对比不同模板/模型的效果。
+用离线评测集(`python/eval/`)对比不同模板/模型的效果,`--baseline` 出前后对比。
 
 ---
 
@@ -417,7 +431,7 @@ is_hot判断: tags包含"新品"或"旗舰"。
 3. **LLM 用量记录**: 每个 Agent 的 token 数与成本（按缓存命中/未命中分别计价）。
    ⚠️ 二次开发【之前】完全没有 token 统计。
 4. **异常日志**: 错误类型, 堆栈, 重试次数
-5. **业务日志**: 推荐结果, 实验分组, 用户行为
+5. **业务日志**: 推荐结果, 用户行为
 
 使用structlog实现结构化日志,支持ELK集成。
 
@@ -458,7 +472,7 @@ services:
 
 > "这是一个完整的面试项目,但架构设计参考了NVIDIA Retail Agentic Commerce
 > (企业级参考实现)和京东商家智能助手(2000+店铺规模)的设计。
-> 核心技术(ReAct/Supervisor/Feature Store/A-B Testing)都是生产级方案。"
+> 核心技术(ReAct/Supervisor/工具契约/熔断降级)都是生产级方案。"
 
 ### "为什么不直接用RAG?"
 
@@ -498,12 +512,7 @@ services:
 - 降级策略
 - 指标收集
 
-### 3. `python/services/ab_test.py` — A/B测试引擎
-- 一致性哈希分桶
-- Thompson Sampling
-- 指标聚合
-
-### 4. `go/orchestrator/supervisor.go` — Go并行实现
+### 3. `go/orchestrator/supervisor.go` — Go并行实现
 - goroutine + sync.WaitGroup 并行
 - sync.Mutex 保护共享状态
 - 与Python版的对比(goroutine vs asyncio)
@@ -515,8 +524,6 @@ services:
 - [ ] 能画出系统架构图(4个Agent + Supervisor + Aggregator)
 - [ ] 能说清楚为什么用Multi-Agent而不是单Agent
 - [ ] 能解释并行+聚合的两阶段策略
-- [ ] 能说出A/B测试的分桶算法(MD5哈希取模)
-- [ ] 能说出Thompson Sampling的原理(Beta分布采样)
 - [ ] 能说出3个稳定性保障手段(重试/超时/降级)
 - [ ] 能解释实时特征的Redis数据结构选型
 - [ ] 能对比三个多Agent框架(LangGraph/CrewAI/AutoGen)

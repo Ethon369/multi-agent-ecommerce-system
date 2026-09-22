@@ -130,7 +130,6 @@ curl -X POST http://localhost:8000/api/v1/recommend -H "Content-Type: applicatio
 
 ```json
 HTTP 200
-experiment_group : control
 total_latency_ms : 1804.9
 products         : 3  (P001 iPhone 16 Pro / P002 华为 Mate 70 / P003 AirPods Pro 3)
 agent_results:
@@ -148,13 +147,15 @@ agent_results:
 
 ## 五、其他需要注意的点
 
-### 1. `requirements.txt` 缺少 pytest
+### 1. `requirements.txt` 曾经缺少 pytest（已修复）
 
-`python/tests/test_ab_test.py` 使用 pytest 风格（裸 `assert`），但依赖清单里没有 pytest，直接跑测试会报模块缺失：
+早期的依赖清单里没有 pytest，`tests/` 使用 pytest 风格（裸 `assert`），
+全新安装后直接跑测试会报模块缺失。现在 `requirements.txt` 的「测试」一节
+已声明 `pytest>=8.0,<10`，照下面这样跑即可：
 
 ```bat
-python -m pip install pytest -i https://mirrors.aliyun.com/pypi/simple
-python -m pytest tests/ -v
+cd python
+.venv\Scripts\python.exe -m pytest tests\ -v
 ```
 
 ### 2. 仓库里存在两个 venv，建议只保留 `python\.venv`
@@ -172,10 +173,17 @@ rmdir /s /q .venv
 
 ### 3. Redis / Milvus 不影响最小启动
 
-代码中 Milvus 向量库**从未被 import**，商品召回使用内置的 15 条 mock 数据（Redis 特征层曾有一份从未接线的实现，已删除）。因此：
+代码中 Milvus 向量库**从未被 import**，商品召回使用内置的 15 条 mock 数据。因此：
 
-- 只想把服务跑起来：**不需要** `docker-compose up`；
-- 需要完整体验 Redis/Milvus/MySQL：再执行 `docker-compose up -d`。
+- 只想把服务跑起来：**不需要** `docker-compose up`，也**不需要**装 Redis；
+- **Redis 实时特征层现在真的接上了**（可选依赖，`ECOM_FEATURE_STORE_ENABLED` 默认 false）。
+  它**不需要 docker** —— 本机原生 Redis 也行；打开前先灌种子数据：
+  `python scripts/seed_behavior.py --reset`。
+  ⚠️ 两个本机实测的坑：连接串必须写 `127.0.0.1` 而不是 `localhost`
+  （`localhost` 会先解析到 IPv6，首次连接挂约 2 秒才回落 → 大于请求路径的 0.5s 超时
+  → **永久降级**）；本机 Redis 是 5.0、不支持 `HELLO`，客户端必须显式 `protocol=2`。
+  详见 `python/services/feature_store.py` 的模块 docstring 与 `python/.env.example`；
+- 需要完整体验 Milvus/MySQL：再执行 `docker-compose up -d`。
 
 ### 4. 运行目录要求
 

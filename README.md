@@ -21,10 +21,11 @@
 | 全链路延迟 p50 | **2,522 ~ 2,788 ms**（优化前 48,015 ms，约 17 倍） |
 | 延迟 p95 | **3,796 ~ 3,997 ms** |
 | 单次推荐成本 | **$0.00056 ~ $0.00061** |
-| 评测通过率 | **10/10** |
-| 单元测试 | **144 个** |
+| 评测通过率 | **12/12**（含 2 条 Redis 用例；特征开关关闭时这 2 条自动跳过，仍 10/10） |
+| 单元测试 | **168 个**（另有 1 条默认跳过的慢速完整链路） |
 | 故障注入 | 注入超时后 **4/4 请求仍是 HTTP 200** |
 | 熔断短路 | 打开后 **0 ms** 返回 |
+| Redis 实时特征 | **实测可用**（滑动窗口 / 去重 / 三值降级），默认开关关闭 |
 
 > 数字写成区间是因为**同一配置多次运行本来就有波动**（LLM 输出长度不确定）。
 > 这是实测值，不是目标值 —— 用 `python -m eval.runner` 可以自己复现。
@@ -33,10 +34,8 @@
 
 | 说法 | 实际情况 |
 |---|---|
-| "CTR 提升 15%、文案点击率提升 23%" | **没有任何数据支撑**。A/B 引擎的 `config` 甚至从未被读取 —— 实验目前不影响任何行为 |
 | "P99 < 2s" | 从未达到。实测 p95 是 3,997 ms |
 | "三语言实现（Python/Java/Go）" | **Java/Go 实现已删除**，只保留 Python |
-| "Redis Sorted Set 实时特征" | **从未实现**。曾有一份 117 行的 `services/feature_store.py`，但从未被实例化，已在死代码清理中删除 |
 | "Milvus 向量检索" | `pymilvus` 在依赖里，但**代码里从未 import** |
 | "MySQL 实时库存" | 实际是 **SQLite + MCP**（这是二次开发时才真正接上的） |
 | "重试最多 3 次" | 实际是 **2 次尝试**（即只重试 1 次）—— 参数原名 `max_retries` 却表示总尝试次数，已改名为 `max_attempts` |
@@ -53,8 +52,9 @@
 |---|---|
 | **MCP 三端** | Server（自建 2 个）+ Client（消费 WMS）+ Host（运营 Copilot 多轮工具调用） |
 | **Agent 运行时保障** | 真超时、滑动窗口熔断、请求级 trace 贯穿、两级降级 |
+| **Redis 实时特征** | Redis Sorted Set 滑动窗口（去重 + 服务端时间戳）、三值 source 降级、默认开关关闭 |
 | **可观测性** | 每个 Agent 的 token 与成本分摊、熔断状态、工具清单 |
-| **评测闭环** | 10 条 golden set + 确定性门禁 + 非门禁 LLM 裁判 + 前后对比 |
+| **评测闭环** | 12 条 golden set + 确定性门禁 + 非门禁 LLM 裁判 + 前后对比 |
 
 ---
 
@@ -68,7 +68,7 @@
 6. [API 接口文档](#-api-接口文档)
 7. [项目文件结构](#-项目文件结构)
 8. [面试资料索引](#-面试资料索引)
-9. [面试八股文精选](#-面试八股文精选10题)
+9. [面试八股文精选](#-面试八股文精选9题)
 10. [简历写法（直接复制）](#-简历写法直接复制)
 11. [参考资料与致谢](#-参考资料与致谢)
 
@@ -92,7 +92,7 @@
 
 ### 技术关键词（面试常考）
 
-`Multi-Agent` · `Supervisor模式` · `LangGraph` · `asyncio并行` · `MCP（Server/Client/Host）` · `A/B Testing` · `Thompson Sampling` · `熔断与降级` · `token 成本核算` · `DeepSeek LLM`
+`Multi-Agent` · `Supervisor模式` · `LangGraph` · `asyncio并行` · `MCP（Server/Client/Host）` · `Redis 实时特征` · `熔断与降级` · `token 成本核算` · `离线评测闭环` · `DeepSeek LLM`
 
 ---
 
@@ -116,7 +116,7 @@
 │  │   用户画像 Agent      │    │   商品召回 Agent      │            │
 │  │  user_profile_agent  │    │  product_rec_agent   │            │
 │  │  ──────────────────  │    │  ────────────────── │            │
-│  │  行为数据(内置兜底)   │    │  多路召回(规则排序)     │            │
+│  │  行为数据(Redis优先)  │    │  多路召回(规则排序)     │            │
 │  │  RFM模型 → 用户分群   │    │  返回候选商品列表     │            │
 │  └──────────┬───────────┘    └──────────┬──────────┘            │
 │             │                           │                         │
@@ -143,18 +143,12 @@
 │             │  ────────────────────────── │                      │
 │             │  5套Prompt模板 × 用户分群    │                      │
 │             │  LLM生成 + 广告法合规校验    │                      │
-│             └──────────────┬───────────────┘                      │
-│                            ▼                                      │
-│             ┌──────────────────────────────┐                      │
-│             │   A/B 测试引擎               │                      │
-│             │  用户ID哈希分桶              │                      │
-│             │  Thompson Sampling 动态调优  │                      │
-│             └──────────────┬───────────────┘                      │
+│             └──────────────────────────────┘                      │
 └──────────────────────────────┬──────────────────────────────────┘
                                ▼
               ┌─────────────────────────────────┐
               │  个性化推荐响应（返回给用户）      │
-              │  商品列表 + 个性化文案 + 实验分组 │
+              │  商品列表 + 个性化文案            │
               └─────────────────────────────────┘
 ```
 
@@ -193,13 +187,16 @@ Supervisor 模式                     Handoffs 模式
 **核心逻辑（简化）**：
 
 ```python
-# Step 1：获取用户行为数据
-# ⚠️ 注意：这里用的是【写死的演示数据】，不是真实行为数据。
-#    曾经有一份 117 行的 Redis 实现（services/feature_store.py），但从未被
-#    实例化过，已删除 —— 与其留一个永远走不到的分支，不如让"数据是假的"
-#    这件事在代码里一眼可见。想接真实行为源，只改 _collect_behavior 一处。
-behavior = await self._collect_behavior(user_id, context)   # 内置兜底数据
-# 返回: {"clicks_1h": 12, "purchases_7d": 3, "categories": ["手机", "耳机"]}
+# Step 1：获取用户行为数据 —— 三源合并，逐 key 优先级 context > Redis > 内置兜底值
+#    Redis 特征开关（ECOM_FEATURE_STORE_ENABLED，默认 false）打开时走真实行为数据，
+#    关闭时才是那份写死的演示数据。返回值里还带一个【三值】来源标记：
+#        redis        真的读到了 Redis 窗口特征
+#        redis_empty  Redis 读成功，但这用户从没被上报过（全新用户）
+#        fallback     开关关 / 读失败 / 超时
+#    ⚠️ redis_empty 时【不】回落兜底值 —— 替一个其实已经流失的用户编造
+#       "近 7 天浏览 25 次"，等于把他伪装成活跃用户，模型就不可能给出 churn_risk。
+behavior, source = await self._collect_behavior(user_id, context)
+# 返回: ({"recent_views": ["手机", "耳机"], "view_count_7d": 3, ...}, "redis")
 
 # Step 2：调用 LLM 分析，输出结构化画像
 prompt = f"用户行为数据: {behavior}\n请分析用户分群和RFM得分，输出JSON"
@@ -211,7 +208,10 @@ return UserProfile(user_id=user_id, segments=["active"], rfm_score=...)
 ```
 
 **关键技术**：
-- **Redis Sorted Set**：`ZADD user:u001:clicks {时间戳} {商品ID}`，支持滑动窗口查询
+- **Redis Sorted Set**：`ZADD fs:behavior:{user_id}:view {服务端时间戳} {商品ID}`，
+  member = 商品 ID（同一商品重复触达只更新 score，天然去重），
+  score = **服务端生成**的时间戳 —— 所有窗口都在**读取时**用 score 区间强制
+  （`ZCOUNT` / `ZREVRANGEBYSCORE`），TTL 只是 GC，不承担正确性
 - **RFM 模型**：Recency（最近购买时间）× Frequency（购买频率）× Monetary（消费金额）
 - **用户分群**：新客 / VIP / 价格敏感 / 活跃 / 流失风险，共 5 类
 
@@ -315,38 +315,34 @@ class SupervisorOrchestrator:
     async def recommend(self, request: RecommendationRequest) -> RecommendationResponse:
         start = time.perf_counter()
 
-        # ① A/B 实验分组（在最开始就决定用哪套策略）
-        experiment = self.ab_engine.assign(request.user_id)
-
-        # ② Phase 1：用户画像 + 商品召回 并行执行
+        # ① Phase 1：用户画像 + 商品召回 并行执行
         profile_result, rec_result = await asyncio.gather(
             self.user_profile_agent.run(user_id=request.user_id, context=request.context),
             self.product_rec_agent.run(user_profile=None, num_items=request.num_items * 2),
         )
         # asyncio.gather() 让两个 IO 密集型任务同时跑，总耗时 ≈ max(两者耗时)
 
-        # ③ Phase 2：LLM重排 + 库存校验 并行执行
+        # ② Phase 2：LLM重排 + 库存校验 并行执行
         rerank_result, inventory_result = await asyncio.gather(
             self.product_rec_agent.run(user_profile=user_profile, num_items=request.num_items),
             self.inventory_agent.run(products=raw_products),
         )
 
-        # ④ 库存过滤：只保留有货商品
+        # ③ 库存过滤：只保留有货商品
         available_ids = set(getattr(inventory_result, "available_products", []))
         final_products = [p for p in ranked_products if p.product_id in available_ids]
 
-        # ⑤ Phase 3：文案生成（需要前两步结果，所以串行）
+        # ④ Phase 3：文案生成（需要前两步结果，所以串行）
         copy_result = await self.marketing_copy_agent.run(
             user_profile=user_profile,
             products=final_products,
         )
 
-        # ⑥ 汇总响应
+        # ⑤ 汇总响应
         total_latency = (time.perf_counter() - start) * 1000
         return RecommendationResponse(
             products=final_products,
             marketing_copies=copies,
-            experiment_group=experiment.get("group", "control"),
             total_latency_ms=total_latency,  # 实测 p50 约 2788ms（不是"目标 2s"）
         )
 ```
@@ -355,39 +351,19 @@ class SupervisorOrchestrator:
 
 ---
 
-### A/B 测试引擎（Thompson Sampling）
+### 为什么这里没有 A/B 实验平台？
 
-**文件**：[`python/services/ab_test.py`](python/services/ab_test.py)
-
-```python
-class ABTestEngine:
-    """
-    流量分桶 + Thompson Sampling 多臂赌博机
-    
-    原理：像赌场里的老虎机，哪台赢的多就多拉哪台。
-    算法自动把更多流量分给表现好的实验组。
-    """
-
-    def assign(self, user_id: str) -> dict:
-        # 用户ID哈希取模 → 保证同一用户每次进同一个实验组（一致性）
-        bucket = int(hashlib.md5(user_id.encode()).hexdigest(), 16) % 100
-        
-        if bucket < 60:
-            return {"group": "control", "strategy": "collaborative_filter"}
-        elif bucket < 80:
-            return {"group": "treatment_llm", "strategy": "llm_rerank"}
-        else:
-            return {"group": "treatment_vector", "strategy": "vector_search"}
-
-    def record_click(self, user_id: str, clicked: bool):
-        # Thompson Sampling: 点击了就更新 Beta 分布参数
-        group = self.assignments.get(user_id, "control")
-        if clicked:
-            self.alpha[group] += 1   # 成功次数 +1
-        else:
-            self.beta[group] += 1    # 失败次数 +1
-        # 下次分配流量时，胜率高的组会自动获得更多流量
-```
+> 早期版本有一个 A/B 引擎（哈希分桶 + Thompson Sampling），后来**主动删掉了**。
+> 原因：这个项目**没有真实流量**，而 A/B 的全部价值都来自真实用户行为 ——
+> 用自定义的代理指标去测写死的 mock 数据，是"演戏"不是实验。
+>
+> 项目真正用来做前后对比的是 [`python/eval/`](python/eval/) 的评测集
+> （12 条 golden set + 确定性断言 + `--baseline` 对比）。
+> 阶段 F 就是靠它完成了一次**基于证据的结论反转**：把文案 Agent 的推理关掉，
+> 实测延迟降 2.9 倍、成本降 4.1 倍。
+>
+> 换句话说，A/B 引擎是**同一个能力的、更复杂的、没接线的冗余实现** ——
+> 删掉之后，这个项目里每个 feature 都是真的。
 
 ---
 
@@ -570,8 +546,9 @@ docker-compose ps
 ```
 
 > ⚠️ **关于 `docker-compose.yml` 里的 Redis / Milvus / MySQL：**
-> 那三个服务目前**代码里都没有连**（`redis` / `pymilvus` / `sqlalchemy`
-> 在依赖里但从未 import）。启起来不影响功能，但也不产生任何作用。
+> **Redis 现在真的被用到了**（实时特征层），但**不需要** docker ——
+> 本机原生 Redis 也行，而且开关 `ECOM_FEATURE_STORE_ENABLED` 默认是 false。
+> `pymilvus` / `sqlalchemy` 仍然**在依赖里但从未 import**，启起来不产生任何作用。
 >
 > 库存数据现在走的是 **SQLite + MCP**，不依赖 MySQL
 > （见 [docs/mcp-integration.md](docs/mcp-integration.md)）。
@@ -587,9 +564,7 @@ docker-compose ps
 | `POST` | `/api/v1/recommend` | 核心推荐接口（确定性链路） |
 | `POST` | `/api/v1/recommend/graph` | 同一件事的 LangGraph 版 |
 | `POST` | `/api/v1/copilot` | ★ **运营助手**：模型自主决定调用哪些工具 |
-| `GET` | `/api/v1/experiments` | A/B 实验状态 |
 | `GET` | `/api/v1/metrics` | 指标：Agent + 熔断 + token/成本 + 工具清单 |
-| `POST` | `/api/v1/experiments/{id}/outcome` | 记录实验结果 |
 | `GET` | `/health` | 健康检查 |
 
 **`/api/v1/recommend` 的响应里有 `harness` 段**（顶层），含：
@@ -665,7 +640,6 @@ Content-Type: application/json
       "copy": "根据您最近对手机的兴趣，为您精选 iPhone 16 Pro，好评率 98%，限时优惠中。"
     }
   ],
-  "experiment_group": "treatment_llm",
   "total_latency_ms": 1523.4
 }
 ```
@@ -703,13 +677,13 @@ multi-agent-ecommerce-system/
 │   └── extension-guide.md       # 二次开发指南（预留钩子 + 难度阶梯）
 │
 └── python/                      # 唯一的实现（Java/Go 已删除）
-    ├── main.py                  # FastAPI 入口：推荐 / 实验 / 指标 / Copilot
+    ├── main.py                  # FastAPI 入口：推荐 / 指标 / Copilot
     ├── requirements.txt
     ├── .env.example
     │
     ├── agents/                  # 4 个 Agent
     │   ├── base_agent.py        # ★ 运行时保障：熔断门→超时→重试→降级
-    │   ├── user_profile_agent.py
+    │   ├── user_profile_agent.py #   三源合并：context > Redis > 内置兜底值
     │   ├── product_rec_agent.py
     │   ├── marketing_copy_agent.py
     │   └── inventory_agent.py   # ★ MCP 客户端的唯一接线点
@@ -734,7 +708,7 @@ multi-agent-ecommerce-system/
     │
     ├── mcp_servers/             # ★ 两个 MCP Server
     │   ├── wms_server.py        #   库存服务（SQLite，4 工具 + 1 resource）
-    │   ├── recommend_server.py  #   把本项目能力暴露出去（4 工具）
+    │   ├── recommend_server.py  #   把本项目能力暴露出去（2 工具）
     │   └── init_wms_db.py       #   建表 + 种子（★ 种子故意与本地假数据不一致）
     │
     ├── orchestrator/
@@ -742,18 +716,21 @@ multi-agent-ecommerce-system/
     │   └── graph.py             #   LangGraph 版同一件事
     │
     ├── services/
-    │   ├── ab_test.py           #   A/B 引擎（分桶 + Thompson）
     │   ├── mcp_client.py        #   ★ MCP 短连接客户端（永不抛异常给调用方）
+    │   ├── feature_store.py     #   ★ Redis 实时特征（滑动窗口，永不抛异常）
     │   └── metrics.py           #   指标 + token/成本累计
     │
+    ├── scripts/
+    │   └── seed_behavior.py     #   灌行为种子数据（三态自证：redis/redis_empty）
+    │
     ├── eval/                    # ★ 评测闭环
-    │   ├── cases.jsonl          #   10 条 golden set
+    │   ├── cases.jsonl          #   12 条 golden set
     │   ├── runner.py            #   确定性断言 + 报告 + --baseline 对比
     │   └── judge.py             #   非门禁 LLM 裁判
     │
     ├── models/schemas.py
     ├── config/settings.py
-    └── tests/                   # 144 个测试，全部离线
+    └── tests/                   # 168 个测试，全部离线
 ```
 
 ## 📚 面试资料索引
@@ -767,7 +744,7 @@ multi-agent-ecommerce-system/
 
 ---
 
-## ❓ 面试八股文精选（10题）
+## ❓ 面试八股文精选（9题）
 
 ### Q1：为什么用 Multi-Agent 而不是单个大 Agent？
 
@@ -775,7 +752,7 @@ multi-agent-ecommerce-system/
 > 单 Agent 管理几十个工具时，上下文膨胀、推理准确率会明显下降。Multi-Agent 的核心优势有三点：
 > 1. **上下文隔离**：每个 Agent 只关注自己领域的工具和数据，Token 消耗少、推理准确
 > 2. **并行加速**：4 个 Agent 可以同时跑，端到端延迟约等于最慢 Agent 的耗时，而不是四者相加
-> 3. **独立演进**：各 Agent 可以独立升级、独立做 A/B 测试，互不影响
+> 3. **独立演进**：各 Agent 可以独立升级、独立替换实现，互不影响
 
 ---
 
@@ -810,53 +787,48 @@ multi-agent-ecommerce-system/
 ### Q4：Redis Sorted Set 怎么做实时特征？
 
 > ```
-> # 写入：用户行为事件
-> ZADD user:u001:clicks {timestamp} {product_id}
+> # 写入：member = 商品 ID，score = 【服务端生成】的时间戳
+> ZADD             fs:behavior:{user_id}:view {now} {item_id}
+> ZREMRANGEBYSCORE fs:behavior:{user_id}:view -inf {now - ttl}   # 修剪，防无界增长
+> EXPIRE           fs:behavior:{user_id}:view {ttl}              # GC 兜底
 >
-> # 读取：最近1小时的点击
-> ZRANGEBYSCORE user:u001:clicks {now-3600} {now}
->
-> # 滑动窗口统计（1h / 24h / 7d）
-> clicks_1h  = ZCOUNT user:u001:clicks {now-3600} {now}
-> clicks_24h = ZCOUNT user:u001:clicks {now-86400} {now}
-> clicks_7d  = ZCOUNT user:u001:clicks {now-604800} {now}
+> # 读取：窗口靠 score 区间在【读取时】强制
+> ZCOUNT           fs:behavior:{user_id}:view {now-7d} +inf      # 近 7 天去重商品数
+> ZREVRANGEBYSCORE fs:behavior:{user_id}:view +inf {now-7d}      # 最近浏览的商品 ID
 > ```
-> 用 score=时间戳 的 Sorted Set，天然支持按时间范围查询，时间复杂度 O(log N)。
+>
+> 四个要点：
+> 1. **member = 商品 ID**，不是整条事件的 JSON。同一商品重复触达只更新 score，
+>    天然去重 —— "最近看过什么"是真的最近，而不是"最近写入过什么"。
+> 2. **score 必须服务端生成。** 本机 Redis 是 5.0，没有 `ZADD GT`，拿不到
+>    "更大才更新"的服务端语义；而调用方传毫秒时间戳（JS 的 `Date.now()` 是经典错误）
+>    会让窗口恒为空 —— 一个单位错误会**静默**变成一次对用户行为的编造。
+> 3. **TTL 不是窗口。** `EXPIRE` 每次写入都会被刷新，只对"再也不来的用户"生效；
+>    真正阻止 ZSET 无界增长的是写入时的 `ZREMRANGEBYSCORE` 修剪。
+> 4. **读失败要和"没数据"分开。** 读接口三态返回：`None` = 读失败、`{}` = 这用户
+>    从没被上报过、`{...}` = 有数据。消费端据此把 `source` 标成
+>    `fallback` / `redis_empty` / `redis` —— 运维上才分得清"新用户来了"和"Redis 挂了"。
+>
+> 复杂度：`ZCOUNT` O(log N)，`ZREVRANGEBYSCORE` O(log N + M)。
 
 ---
 
-### Q5：A/B 测试的流量分桶怎么保证一致性？
+### Q5：这个项目为什么不做 A/B 测试？
 
-> ```python
-> # 用 MD5 哈希取模 → 同一个 user_id 每次落到同一个桶
-> bucket = int(hashlib.md5(user_id.encode()).hexdigest(), 16) % 100
+> 因为**没有真实流量**。A/B 的全部价值来自真实用户行为 —— 没有流量就什么都测不出；
+> 而用自定义的代理指标去测写死的 mock 数据，是"演戏"不是实验。
 >
-> # 0-59  → control（60%流量）
-> # 60-79 → treatment_llm（20%流量）
-> # 80-99 → treatment_vector（20%流量）
-> ```
-> 只要 user_id 不变，分桶结果永远一致。这样同一个用户在实验期间始终体验同一套策略，保证实验结论的可靠性。
+> 项目真正用来做前后对比的是**离线评测集**（[`python/eval/`](python/eval/)，12 条 golden set
+> + 确定性断言 + `--baseline` 对比）。阶段 F 就是靠它做了一次基于证据的结论反转：
+> 把文案 Agent 的推理关掉，实测延迟降 2.9 倍、成本降 4.1 倍。
+>
+> 早期版本确实写过一个 A/B 引擎（哈希分桶 + Thompson Sampling），
+> 但那是**同一个能力的、更复杂的、没接线的冗余实现**，已经删掉了 ——
+> 删掉之后项目里每个 feature 都是真的。
 
 ---
 
-### Q6：Thompson Sampling 怎么动态调流量？
-
-> 核心思想：哪个实验组赢得多，就自动给它更多流量（像"站在赢家那边"）。
->
-> ```python
-> # 每个实验组维护 Beta 分布参数
-> alpha = {"control": 100, "treatment": 80}   # 点击次数
-> beta  = {"control": 50,  "treatment": 20}   # 未点击次数
->
-> # 分配流量时，从各组的 Beta 分布采样，取最大值的组
-> samples = {group: np.random.beta(alpha[g], beta[g]) for g in groups}
-> winner = max(samples, key=samples.get)
-> # CTR 越高的组，采样值越大，被选中概率越高
-> ```
-
----
-
-### Q7：Agent 调用失败怎么处理？
+### Q6：Agent 调用失败怎么处理？
 
 > 三层保障：
 > 1. **超时控制**：`asyncio.wait_for(coro, timeout=5)` — 每个 Agent 独立超时，不阻塞整体
@@ -867,7 +839,7 @@ multi-agent-ecommerce-system/
 
 ---
 
-### Q8：LangGraph 和直接写 `asyncio.gather()` 有什么区别？
+### Q7：LangGraph 和直接写 `asyncio.gather()` 有什么区别？
 
 > | | LangGraph | 直接写 asyncio |
 > |--|--|--|
@@ -879,7 +851,7 @@ multi-agent-ecommerce-system/
 
 ---
 
-### Q9：RFM 模型怎么计算？
+### Q8：RFM 模型怎么计算？
 
 > ```
 > R (Recency)  = 距离上次购买的天数    → 越小越好（最近买过）
@@ -898,7 +870,7 @@ multi-agent-ecommerce-system/
 
 ---
 
-### Q10：系统延迟是怎么优化的？
+### Q9：系统延迟是怎么优化的？
 
 > **实测数据**（不是目标值）：全链路 p50 从 **48,015 ms 降到 2,788 ms（约 17 倍）**。
 >
@@ -929,8 +901,9 @@ multi-agent-ecommerce-system/
 ## 📋 简历写法（直接复制）
 
 > ⚠️ **下面每个数字都能在仓库里找到出处**（`eval_results/` 下的评测报告）。
-> 旧版本里写的"CTR 提升 15%、文案点击率提升 23%"**没有数据支撑，已删除** ——
-> 面试官问"你怎么测的 A/B"会非常被动。
+> 旧版本里写的"CTR 提升 15%、文案点击率提升 23%"**没有任何数据支撑，已删除** ——
+> 这个项目没有线上流量，指标只能靠 `python/eval/` 的评测集跑前后对比，
+> 面试官问"那些提升数字怎么测的"会立刻穿帮。
 
 ```
 多Agent电商推荐与营销系统 | 个人项目 | 2026.09 - 2026.10
@@ -941,18 +914,24 @@ multi-agent-ecommerce-system/
   四次请求全部 HTTP 200 且商品文案照常返回
 
 • 【MCP 三端】基于 MCP Python SDK v2 实现 Server + Client + Host 三端：
-  自建库存 Server（SQLite，4 工具 + 1 resource）与推荐 Server（暴露 4 个工具）；
+  自建库存 Server（SQLite，4 工具 + 1 resource）与推荐 Server（暴露 2 个工具）；
   库存 Agent 作为 Client 消费 WMS；并实现多轮 tool-calling loop 的运营 Copilot 作为 Host。
   MCP 不可用时自动降级并在响应中标注 source=fallback
 
 • 【协议层判断】评估现成 SQLite MCP Server 后主动否决（官方已归档、存在 CWE-89、
   通用 SQL 入口与库存查询的确定性要求语义不匹配），自建确定性工具契约
 
+• 【实时特征】为画像 Agent 接入 Redis Sorted Set 实时特征层：member=商品 ID 天然去重、
+  score=服务端生成的时间戳、窗口在【读取时】用 score 区间强制；空数据不回落兜底值
+  （不给流失用户编造"活跃"行为）。读接口三值 source（redis / redis_empty / fallback），
+  降级实测：Redis 指向死端口后 3/3 请求仍 HTTP 200，confidence 0.95 → 0.7
+  （开关默认关闭，关闭时行为与接入前完全一致）
+
 • 【性能与成本】通过测量定位到延迟与推理 token 数相关系数 0.997，
   关闭确定型任务的推理后全链路 p50 从 48,015ms 降至 2,788ms（约 17 倍），
   单次推荐成本从 $0.0025 降至 $0.0006（4.1 倍）
 
-• 【评测闭环】构建 10 条 golden set + 确定性断言门禁 + 非门禁 LLM 裁判，
+• 【评测闭环】构建 12 条 golden set + 确定性断言门禁 + 非门禁 LLM 裁判，
   报告带 git SHA / 模型 / 价格表指纹保证前后可比。
   基于该闭环完成一次结论反转：按实测数据推翻了自己此前"文案保留推理"的判断
 
