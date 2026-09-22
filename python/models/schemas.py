@@ -119,7 +119,6 @@ class RecommendationResponse(BaseModel):
     user_id: str
     products: list[Product] = Field(default_factory=list)
     marketing_copies: list[dict[str, str]] = Field(default_factory=list)
-    experiment_group: str = "control"
     # SerializeAsAny 是为了绕开 pydantic 的一个【静默】行为：
     # 它默认按【声明类型】序列化，所以声明成基类 AgentResult 时，
     # 子类独有的字段（profile / products / copies / low_stock_alerts /

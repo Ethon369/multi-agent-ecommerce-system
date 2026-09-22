@@ -3,17 +3,15 @@
 
     为什么这条值得专门的测试
     ──────────────────────
-    重构之前，这个进程里同时存在【互不相知】的多套实例：
-        graph.py      模块级构造 4 个 Agent + 1 个 ABTestEngine
+    重构之前，这个进程里同时存在【互不相知】的多套 Agent：
+        graph.py      模块级构造 4 个 Agent
         supervisor.py __init__ 里再构造 4 个 Agent
-        main.py       又建了 1 个 ABTestEngine
 
-    由此产生的 bug 是真实且静默的，不是"代码不好看"：
-        POST /api/v1/experiments/{id}/outcome 把实验结论记进 main 的引擎，
-        而 /api/v1/recommend/graph 的 Thompson 采样读的是 graph 自己的引擎
-        —— 实验结论永远传不到那条路径。
-    以及：一个端点把某 Agent 打到熔断，另一个端点完全不知情，继续往
-    注定失败的下游上打。
+    由此产生的 bug 是真实且静默的，不是"代码不好看"：一个端点把某 Agent
+    打到熔断，另一个端点完全不知情，继续往注定失败的下游上打。
+
+    （当时还有第三个分裂源：A/B 引擎 —— 实验结论记进 main 的引擎，而
+    推荐链路读的是另一个。它已随 A/B 引擎整体移除。）
 
     这类问题不会让任何测试变红，只会让线上行为难以解释。所以要显式断言。
 """
@@ -34,7 +32,6 @@ def _clean_deps():
 
 def test_agents_are_singletons() -> None:
     assert deps.get_agents() is deps.get_agents()
-    assert deps.get_ab_engine() is deps.get_ab_engine()
     assert deps.get_metrics_collector() is deps.get_metrics_collector()
     assert deps.get_supervisor() is deps.get_supervisor()
 
@@ -50,16 +47,6 @@ def test_supervisor_uses_shared_agents() -> None:
     assert supervisor.inventory_agent is shared["inventory"]
 
 
-def test_supervisor_uses_shared_ab_engine() -> None:
-    """
-    这条直指那个静默 bug：
-
-    实验结论通过 REST 记录进 get_ab_engine()，而推荐链路读的也必须是同一个，
-    否则 Thompson 采样永远学不到东西。
-    """
-    assert deps.get_supervisor().ab_engine is deps.get_ab_engine()
-
-
 def test_graph_uses_shared_agents() -> None:
     """
     graph.py 原先在【模块导入时】就构造了自己的一套。
@@ -73,10 +60,8 @@ def test_graph_uses_shared_agents() -> None:
 
     src = inspect.getsource(graph)
     assert "get_agents()" in src, "graph.py 没有走组合根"
-    assert "get_ab_engine()" in src, "graph.py 没有用共享的 A/B 引擎"
     # 模块级不该再出现裸构造
     assert "UserProfileAgent()" not in src
-    assert "ABTestEngine()" not in src
 
 
 def test_reset_deps_gives_fresh_instances() -> None:
@@ -101,3 +86,36 @@ def test_breakers_are_shared_across_paths() -> None:
     b2 = runtime.breaker_for("inventory")
     assert b1 is b2
     assert b1 is runtime.breaker_for(agents["inventory"].name)
+
+
+def test_feature_store_follows_the_switch() -> None:
+    """开关关闭时返回 None —— 连 redis 客户端都不构造（零新增失败面）。"""
+    from config import get_settings
+
+    get_settings().feature_store_enabled = False
+    assert deps.get_feature_store() is None
+
+
+def test_feature_store_is_a_singleton_and_reset_rebuilds_it() -> None:
+    """
+    ⚠️ 这条同时守着 `reset_deps()` 里那行 `get_feature_store.cache_clear()`。
+
+    漏了它会怎样：既有测试用 `monkeypatch.setattr(get_settings(), ...)`
+    【原地改】那个被 `@lru_cache` 缓存的 Settings 单例，而项目里没有
+    `reset_settings` —— 于是"测试 A 开了开关建好 store、测试 B 关了开关
+    却拿到 A 留下的旧 store"是必然发生的，症状是"单独跑过、一起跑挂"。
+    （conftest 的 `_isolate_agent_runtime` 注释里描述过同一类问题。）
+    """
+    from config import get_settings
+
+    get_settings().feature_store_enabled = True
+    try:
+        assert deps.get_feature_store() is deps.get_feature_store()
+
+        deps.reset_deps()
+
+        rebuilt = deps.get_feature_store()
+        assert rebuilt is not None, "reset 之后必须重建"
+    finally:
+        get_settings().feature_store_enabled = False
+        deps.reset_deps()

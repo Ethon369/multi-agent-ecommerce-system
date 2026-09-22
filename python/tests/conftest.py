@@ -2,7 +2,7 @@
 pytest 公共装置。
 
 1. 消除 sys.path 样板 —— 原先每个测试文件各自复制一遍
-   `sys.path.insert(...)`（见 tests/test_ab_test.py 顶部）。
+   `sys.path.insert(...)`。
 2. 提供把日志捕进列表的 `captured` 装置。
 
 注意：不需要 pytest-asyncio。anyio 自带 pytest 插件（实测 anyio 4.15.1
@@ -79,3 +79,155 @@ def captured() -> list[dict[str, Any]]:
     finally:
         structlog.contextvars.clear_contextvars()
         structlog.reset_defaults()
+
+
+# ── 假 Redis ────────────────────────────────────────────────────
+#
+# 项目测外部依赖一律【手写假对象】，不引入 mock 库
+# （见 tests/test_inventory_mcp.py 的 FakeMCPClient）。
+# requirements.txt 里也没有 fakeredis —— 为几个用例加一个依赖不划算。
+#
+# 只实现 FeatureStore 真正用到的那几个命令。窄是有意的：假对象的面越小，
+# 它和真实现的偏差就越小；一个"什么都支持"的假 Redis 反而会给出
+# 真实环境里不成立的结论。
+
+
+def _score_in_range(score: float, low: Any, high: Any) -> bool:
+    if low != "-inf" and score < low:
+        return False
+    if high != "+inf" and score > high:
+        return False
+    return True
+
+
+class FakeRedis:
+    """只实现 FeatureStore 用到的命令的内存假 Redis。"""
+
+    def __init__(self) -> None:
+        self.zsets: dict[str, dict[str, float]] = {}
+        self.hashes: dict[str, dict[str, Any]] = {}
+        self.strings: dict[str, str] = {}
+        self.expires: dict[str, int] = {}
+        #: 设成某个命令名（如 "zcount"）后该命令会抛异常 —— 用来测降级。
+        self.raise_on: str | None = None
+        #: 记录发生过的命令名，用来断言"降级时没有继续往下打"。
+        self.commands: list[str] = []
+
+    def _maybe_raise(self, command: str) -> None:
+        self.commands.append(command)
+        if self.raise_on == command:
+            raise ConnectionError(f"fake redis: {command} unavailable")
+
+    async def zadd(self, key: str, mapping: dict[str, float]) -> int:
+        self._maybe_raise("zadd")
+        zset = self.zsets.setdefault(key, {})
+        added = sum(1 for member in mapping if member not in zset)
+        zset.update(mapping)
+        return added
+
+    async def zcount(self, key: str, low: Any, high: Any) -> int:
+        self._maybe_raise("zcount")
+        return sum(
+            1
+            for score in self.zsets.get(key, {}).values()
+            if _score_in_range(score, low, high)
+        )
+
+    async def zrangebyscore(
+        self, key: str, low: Any, high: Any, withscores: bool = False
+    ) -> list:
+        self._maybe_raise("zrangebyscore")
+        items = sorted(
+            (
+                (member, score)
+                for member, score in self.zsets.get(key, {}).items()
+                if _score_in_range(score, low, high)
+            ),
+            key=lambda kv: kv[1],
+        )
+        return items if withscores else [member for member, _ in items]
+
+    async def zrevrangebyscore(
+        self,
+        key: str,
+        high: Any,
+        low: Any,
+        start: int | None = None,
+        num: int | None = None,
+        withscores: bool = False,
+    ) -> list:
+        self._maybe_raise("zrevrangebyscore")
+        items = sorted(
+            (
+                (member, score)
+                for member, score in self.zsets.get(key, {}).items()
+                if _score_in_range(score, low, high)
+            ),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )
+        if start is not None:
+            items = items[start : None if num is None else start + num]
+        return items if withscores else [member for member, _ in items]
+
+    async def zremrangebyscore(self, key: str, low: Any, high: Any) -> int:
+        self._maybe_raise("zremrangebyscore")
+        zset = self.zsets.get(key)
+        if not zset:
+            return 0
+        doomed = [m for m, s in zset.items() if _score_in_range(s, low, high)]
+        for member in doomed:
+            del zset[member]
+        return len(doomed)
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        self._maybe_raise("expire")
+        self.expires[key] = ttl
+        return True
+
+    async def set(self, key: str, value: Any, ex: int | None = None) -> bool:
+        self._maybe_raise("set")
+        self.strings[key] = str(value)
+        if ex is not None:
+            self.expires[key] = ex
+        return True
+
+    async def get(self, key: str) -> str | None:
+        self._maybe_raise("get")
+        return self.strings.get(key)
+
+    async def hset(self, key: str, field: str, value: Any) -> int:
+        self._maybe_raise("hset")
+        self.hashes.setdefault(key, {})[field] = value
+        return 1
+
+    async def hgetall(self, key: str) -> dict[str, Any]:
+        self._maybe_raise("hgetall")
+        return dict(self.hashes.get(key, {}))
+
+    async def delete(self, *keys: str) -> int:
+        self._maybe_raise("delete")
+        removed = 0
+        for key in keys:
+            for store in (self.zsets, self.hashes, self.strings, self.expires):
+                if key in store:
+                    del store[key]
+                    removed += 1
+        return removed
+
+    async def scan_iter(self, match: str = "*"):
+        import fnmatch
+
+        every = set(self.zsets) | set(self.hashes) | set(self.strings)
+        for key in sorted(every):
+            if fnmatch.fnmatch(key, match):
+                yield key
+
+    async def ping(self) -> bool:
+        self._maybe_raise("ping")
+        return True
+
+
+@pytest.fixture
+def fake_redis() -> FakeRedis:
+    return FakeRedis()

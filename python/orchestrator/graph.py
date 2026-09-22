@@ -18,7 +18,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from harness import new_request_id
-from harness.deps import get_ab_engine, get_agents
+from harness.deps import get_agents
 from models.schemas import Product, UserProfile
 
 
@@ -28,7 +28,6 @@ class PipelineState(TypedDict, total=False):
     scene: str
     num_items: int
     context: dict[str, Any]
-    experiment_group: str
 
     user_profile: UserProfile | None
     raw_products: list[Product]
@@ -42,11 +41,9 @@ class PipelineState(TypedDict, total=False):
     _start_time: float
 
 
-# 原先这里在【模块导入时】构造了 4 个 Agent 和自己的一个 ABTestEngine，
-# 于是和 main.py / supervisor.py 各自持有互不相知的实例：
-#   - 熔断状态各算各的（一个端点打挂的 Agent，另一个不知情）
-#   - A/B 实验结果传不过去（outcome 记进 main 的引擎，Thompson 采样读这个的）
-# 现在统一走 harness.deps，全进程一份。
+# 原先这里在【模块导入时】构造了 4 个 Agent，于是和 supervisor.py 各自
+# 持有互不相知的实例：熔断状态各算各的（一个端点打挂的 Agent，另一个
+# 端点不知情）。现在统一走 harness.deps，全进程一份。
 #
 # 惰性获取而不是在模块级构造，还有一个实际好处：import 本模块不再立刻
 # 建 LLM 客户端、读 .env —— MCP Server 进程和测试进程未必需要全部依赖。
@@ -58,8 +55,6 @@ async def init_node(state: PipelineState) -> PipelineState:
     state.setdefault("request_id", new_request_id())
     state["_start_time"] = time.perf_counter()
     state["agent_results"] = {}
-    exp = get_ab_engine().assign(state["user_id"])
-    state["experiment_group"] = exp.get("group", "control")
     return state
 
 

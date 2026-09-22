@@ -2,7 +2,7 @@
 内置工具 —— 把项目已有的能力包装成 ToolSpec。
 
     设计原则：只包装【已经有了】的能力，不新增业务逻辑。
-    get_metrics / get_experiments 都是直接复用 main.py 里已经在用的那些对象
+    get_metrics / list_products 都是直接复用 main.py 里已经在用的那些对象
     （通过 harness/deps.py 拿共享单例），所以运营 Copilot 看到的数据
     和 REST 接口看到的是同一份，不会出现"两套真相"。
 
@@ -29,29 +29,6 @@ async def _get_metrics() -> dict[str, Any]:
         "agents": get_metrics_collector().get_agent_stats(),
         "llm": get_metrics_collector().get_llm_stats(),
     }
-
-
-async def _get_experiments() -> dict[str, Any]:
-    from ..deps import get_ab_engine
-
-    engine = get_ab_engine()
-    out: dict[str, Any] = {}
-    for exp_id, exp in engine.experiments.items():
-        out[exp_id] = {
-            "name": exp.name,
-            "enabled": exp.enabled,
-            "groups": [
-                {
-                    "name": g.name,
-                    "weight": g.weight,
-                    "successes": g.successes,
-                    "failures": g.failures,
-                }
-                for g in exp.groups
-            ],
-            "stats": engine.get_stats(exp_id),
-        }
-    return out
 
 
 async def _list_products(category: str | None = None) -> list[dict[str, Any]]:
@@ -90,19 +67,6 @@ def build_builtin_tools() -> list[ToolSpec]:
             ),
             input_schema={"type": "object", "properties": {}, "required": []},
             handler=_get_metrics,
-            timeout_s=3.0,
-            tags=_READ_ONLY,
-            source="builtin",
-        ),
-        ToolSpec(
-            name="get_experiments",
-            description=(
-                "查看 A/B 实验的分组配置与统计结果（各组的成功/失败次数、"
-                "Thompson 采样的后验统计）。用于回答『实验跑得怎么样』"
-                "『哪个组效果更好』。"
-            ),
-            input_schema={"type": "object", "properties": {}, "required": []},
-            handler=_get_experiments,
             timeout_s=3.0,
             tags=_READ_ONLY,
             source="builtin",

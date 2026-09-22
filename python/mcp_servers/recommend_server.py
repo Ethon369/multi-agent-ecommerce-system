@@ -52,11 +52,11 @@ server = MCPServer(
     title="电商多 Agent 推荐系统",
     version="1.0.0",
     instructions=(
-        "本服务提供一个多 Agent 电商推荐系统的能力：个性化推荐、A/B 实验状态、"
+        "本服务提供一个多 Agent 电商推荐系统的能力：个性化推荐、"
         "系统运行指标。\n\n"
         "重要：recommend_products 会真实调用大模型，**单次约 5-15 秒**，"
         "请预留足够超时时间，不要当成毫秒级的本地查询。\n\n"
-        "除 record_experiment_outcome 外，全部工具都是只读的。"
+        "全部工具都是只读的。"
     ),
 )
 
@@ -88,7 +88,6 @@ def _flat_response(payload: dict[str, Any]) -> dict[str, Any]:
             for p in payload.get("products", [])
         ],
         "marketing_copies": payload.get("marketing_copies", []),
-        "experiment_group": payload.get("experiment_group"),
         "total_latency_ms": round(payload.get("total_latency_ms", 0), 1),
         "usage": (payload.get("harness") or {}).get("usage"),
         "agents": (payload.get("harness") or {}).get("agents"),
@@ -126,36 +125,6 @@ async def recommend_products(
 
 @server.tool(
     description=(
-        "查看所有 A/B 实验的分组配置与统计结果（各组成功/失败次数、"
-        "Thompson 采样的后验统计）。用于回答『实验跑得怎么样』『哪个组更好』。"
-    )
-)
-async def get_experiments() -> dict[str, Any]:
-    from harness.deps import get_ab_engine
-
-    engine = get_ab_engine()
-    out: dict[str, Any] = {}
-    for exp_id, exp in engine.experiments.items():
-        out[exp_id] = {
-            "name": exp.name,
-            "enabled": exp.enabled,
-            "groups": [
-                {
-                    "name": g.name,
-                    "weight": g.weight,
-                    "config": g.config,
-                    "successes": g.successes,
-                    "failures": g.failures,
-                }
-                for g in exp.groups
-            ],
-            "stats": engine.get_stats(exp_id),
-        }
-    return out
-
-
-@server.tool(
-    description=(
         "查看系统运行指标：各 Agent 的调用次数/成功率/平均延迟、"
         "熔断器状态、LLM token 消耗与成本。用于回答『系统健康吗』『花了多少钱』。"
     )
@@ -169,30 +138,6 @@ async def get_metrics() -> dict[str, Any]:
         "llm": get_metrics_collector().get_llm_stats(),
         "breakers": get_runtime().snapshot(),
     }
-
-
-@server.tool(
-    description=(
-        "记录一次 A/B 实验的结果（成功或失败），用于更新 Thompson 采样的后验分布。"
-        "这是本服务【唯一】的写操作，且是幂等安全的（只累加计数）。"
-    )
-)
-async def record_experiment_outcome(
-    experiment_id: str, group: str, success: bool
-) -> dict[str, Any]:
-    from harness.deps import get_ab_engine
-
-    engine = get_ab_engine()
-    if experiment_id not in engine.experiments:
-        # 返回可判定的结果而不是抛异常 —— 让调用方（包括模型）能自行处置
-        return {
-            "ok": False,
-            "error": "experiment_not_found",
-            "available": sorted(engine.experiments),
-        }
-
-    engine.record_outcome(experiment_id, group, success)
-    return {"ok": True, "experiment_id": experiment_id, "group": group, "success": success}
 
 
 def main() -> None:

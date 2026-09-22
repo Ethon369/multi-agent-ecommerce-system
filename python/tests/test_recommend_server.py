@@ -4,7 +4,7 @@ recommend_server 测试（MCP 服务端侧）。
 全部用【进程内连接】`Client(server)` —— 不起子进程、不占端口。
 
 对应 PRD 的验收项：
-    A1  工具可被发现（list_tools 能列出全部 4 个）
+    A1  工具可被发现（list_tools 能列出全部 2 个）
     A2  工具逻辑正确
 
 不测 recommend_products 的完整链路（那会真调 LLM，~10 秒且花钱）——
@@ -20,9 +20,7 @@ from mcp_servers.recommend_server import server
 
 EXPECTED_TOOLS = {
     "recommend_products",
-    "get_experiments",
     "get_metrics",
-    "record_experiment_outcome",
 }
 
 
@@ -56,21 +54,6 @@ async def test_recommend_products_documents_its_slowness() -> None:
 
 
 @pytest.mark.anyio
-async def test_get_experiments() -> None:
-    async with Client(server) as client:
-        r = await client.call_tool("get_experiments", {})
-
-    assert r.is_error is False
-    data = r.structured_content
-    assert "rec_strategy" in data
-    for exp in data.values():
-        assert "groups" in exp
-        for g in exp["groups"]:
-            # Thompson 采样需要后验参数，缺了就没法做动态流量分配
-            assert "successes" in g and "failures" in g
-
-
-@pytest.mark.anyio
 async def test_get_metrics() -> None:
     async with Client(server) as client:
         r = await client.call_tool("get_metrics", {})
@@ -78,50 +61,6 @@ async def test_get_metrics() -> None:
     assert r.is_error is False
     data = r.structured_content
     assert {"agents", "llm", "breakers"} <= set(data.keys())
-
-
-@pytest.mark.anyio
-async def test_record_outcome_is_idempotent_safe() -> None:
-    """
-    这是本服务【唯一】的写操作。
-
-    选它当唯一写操作的理由：它只累加计数，是幂等安全的 ——
-    Host 侧的模型误触发一次，后果只是多一个样本，不会破坏数据。
-    """
-    async with Client(server) as client:
-        r1 = await client.call_tool(
-            "record_experiment_outcome",
-            {"experiment_id": "rec_strategy", "group": "treatment_llm", "success": True},
-        )
-        before = (await client.call_tool("get_experiments", {})).structured_content
-
-        r2 = await client.call_tool(
-            "record_experiment_outcome",
-            {"experiment_id": "rec_strategy", "group": "treatment_llm", "success": True},
-        )
-
-    assert r1.structured_content["ok"] is True
-    assert r2.structured_content["ok"] is True
-
-    grp = next(
-        g for g in before["rec_strategy"]["groups"] if g["name"] == "treatment_llm"
-    )
-    assert grp["successes"] >= 1
-
-
-@pytest.mark.anyio
-async def test_record_outcome_unknown_experiment_is_a_value() -> None:
-    """未知实验要返回可判定的结果，而不是抛异常 —— 让模型能自我纠正。"""
-    async with Client(server) as client:
-        r = await client.call_tool(
-            "record_experiment_outcome",
-            {"experiment_id": "no_such_exp", "group": "x", "success": True},
-        )
-
-    assert r.is_error is False
-    assert r.structured_content["ok"] is False
-    assert r.structured_content["error"] == "experiment_not_found"
-    assert "available" in r.structured_content, "要告诉模型有哪些可选，它才能纠正"
 
 
 # ── 参数校验（不真调 LLM，因为校验在调用之前）──────────────

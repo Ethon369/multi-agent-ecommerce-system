@@ -110,7 +110,7 @@ class CopilotAgent:
         self.max_wall_s = max_wall_s
         self.max_tokens = max_tokens
         # 默认只给【只读】工具。写操作不该让模型自由触发 ——
-        # 即便 record_experiment_outcome 是幂等安全的，也不该由聊天触发。
+        # 聊天框里一句模糊的话就可能导致一次真实写操作，这个风险不该由模型承担。
         self.allowed_tags = allowed_tags if allowed_tags is not None else {"read_only"}
 
         # 温度调低：工具调用的可靠性对温度很敏感，0.9 会让模型

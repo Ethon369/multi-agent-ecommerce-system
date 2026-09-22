@@ -26,7 +26,7 @@ from typing import Any
 import structlog
 
 from harness import get_runtime, new_request_id, request_context
-from harness.deps import get_ab_engine, get_agents, get_pricing
+from harness.deps import get_agents, get_pricing
 from harness.usage import usage_scope
 from models.schemas import (
     HarnessReport,
@@ -36,24 +36,20 @@ from models.schemas import (
     RecommendationResponse,
     UserProfile,
 )
-from services.ab_test import ABTestEngine
-
 logger = structlog.get_logger()
 
 
 class SupervisorOrchestrator:
     """Coordinates four agents in parallel-then-aggregate pattern."""
 
-    def __init__(self, ab_engine: ABTestEngine | None = None):
+    def __init__(self):
         # 走 harness.deps 拿共享单例，而不是各自 new 一套。
-        # 否则 graph.py 那条路径会持有另一组 Agent 和另一个 ABTestEngine，
-        # 导致熔断状态与 A/B 实验结果两边互不相知。
+        # 否则 graph.py 那条路径会持有另一组 Agent，熔断状态两边互不相知。
         agents = get_agents()
         self.user_profile_agent = agents["user_profile"]
         self.product_rec_agent = agents["product_rec"]
         self.marketing_copy_agent = agents["marketing_copy"]
         self.inventory_agent = agents["inventory"]
-        self.ab_engine = ab_engine or get_ab_engine()
 
     async def recommend(self, request: RecommendationRequest) -> RecommendationResponse:
         request_id = new_request_id()
@@ -75,8 +71,6 @@ class SupervisorOrchestrator:
             request_context(request_id, user_id=request.user_id, scene=request.scene),
             usage_scope() as usage,
         ):
-            experiment = self.ab_engine.assign(request.user_id)
-
             # Phase 1: parallel — user profile + product recall
             profile_result, rec_result = await asyncio.gather(
                 self.user_profile_agent.run(
@@ -157,7 +151,6 @@ class SupervisorOrchestrator:
             user_id=request.user_id,
             products=final_products,
             marketing_copies=copies,
-            experiment_group=experiment.get("group", "control"),
             agent_results=results,
             harness=self._harness_report(request_id, results, usage_report),
             total_latency_ms=total_latency,

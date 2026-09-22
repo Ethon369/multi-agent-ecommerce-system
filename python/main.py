@@ -4,7 +4,6 @@ Multi-Agent E-Commerce Recommendation System — FastAPI Entry Point
 Endpoints:
   POST /api/v1/recommend          - 获取个性化推荐
   POST /api/v1/recommend/graph    - 通过LangGraph pipeline推荐
-  GET  /api/v1/experiments        - 查看A/B实验状态
   GET  /api/v1/metrics            - 查看系统监控指标
   GET  /health                    - 健康检查
 """
@@ -26,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import get_settings
 from harness import get_runtime, new_request_id, request_context
 from harness.deps import (
-    get_ab_engine,
+    get_feature_store,
     get_metrics_collector,
     get_pricing,
     get_supervisor,
@@ -42,7 +41,6 @@ settings = get_settings()
 
 # 走组合根取共享单例 —— 与 graph.py、未来的 MCP Server / Copilot 用的是同一份。
 # 此前这里是三套互不相知的实例，导致熔断状态和 A/B 实验结果在不同路径上不同步。
-ab_engine = get_ab_engine()
 metrics_collector = get_metrics_collector()
 supervisor = get_supervisor()
 rec_graph = None
@@ -52,6 +50,15 @@ rec_graph = None
 async def lifespan(app: FastAPI):
     global rec_graph
     rec_graph = build_recommendation_graph()
+
+    # 预热 Redis 连接：把【首次连接】的代价在启动时付掉，别让第一个
+    # 用户请求付。实测首次连接约 2 秒（`localhost` 先试 IPv6 再回落 IPv4），
+    # 而请求路径的超时只有 0.5 秒 —— 正好会把连接掐断，变成永久降级、
+    # 每次请求都重新连、每次都超时。失败只记日志，不阻断启动。
+    store = get_feature_store()
+    if store is not None:
+        await store.warmup()
+
     logger.info("app.startup", model=settings.llm_model)
     yield
     logger.info("app.shutdown")
@@ -80,7 +87,16 @@ app.include_router(copilot_router)
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "model": settings.llm_model}
+    # 除了探活，这里还汇报【可选依赖的开关状态】。
+    # 评测 runner 是另一个进程，用它自己的设置去判断"服务端开没开"会判错
+    # （实测：给服务端加了 ECOM_FEATURE_STORE_ENABLED=true 而 runner 没加，
+    # 用例被误判成配置不满足）。所以让服务端自己说。
+    return {
+        "status": "healthy",
+        "model": settings.llm_model,
+        "feature_store_enabled": settings.feature_store_enabled,
+        "mcp_wms_enabled": settings.mcp_wms_enabled,
+    }
 
 
 @app.post("/api/v1/recommend", response_model=RecommendationResponse)
@@ -113,32 +129,8 @@ async def recommend_via_graph(request: RecommendationRequest):
         "user_id": result.get("user_id"),
         "products": [p.model_dump() for p in result.get("final_products", [])],
         "marketing_copies": result.get("marketing_copies", []),
-        "experiment_group": result.get("experiment_group", "control"),
         "total_latency_ms": round(result.get("total_latency_ms", 0), 1),
     }
-
-
-@app.get("/api/v1/experiments")
-async def get_experiments():
-    """查看所有A/B实验状态"""
-    experiments = {}
-    for exp_id, exp in ab_engine.experiments.items():
-        experiments[exp_id] = {
-            "name": exp.name,
-            "enabled": exp.enabled,
-            "groups": [
-                {
-                    "name": g.name,
-                    "weight": g.weight,
-                    "config": g.config,
-                    "successes": g.successes,
-                    "failures": g.failures,
-                }
-                for g in exp.groups
-            ],
-            "stats": ab_engine.get_stats(exp_id),
-        }
-    return experiments
 
 
 @app.get("/api/v1/metrics")
@@ -162,13 +154,6 @@ async def get_metrics():
         # 这是判断"MCP 到底接上没有"最快的办法。
         "tools": registry.snapshot(),
     }
-
-
-@app.post("/api/v1/experiments/{experiment_id}/outcome")
-async def record_outcome(experiment_id: str, group: str, success: bool):
-    """记录A/B测试结果,更新Thompson Sampling"""
-    ab_engine.record_outcome(experiment_id, group, success)
-    return {"status": "recorded"}
 
 
 def _collect_metrics(response: RecommendationResponse):

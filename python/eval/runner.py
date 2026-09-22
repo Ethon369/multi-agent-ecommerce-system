@@ -160,12 +160,86 @@ def check_case(case: dict[str, Any], body: dict[str, Any]) -> list[str]:
         if cost > max_cost:
             failures.append(f"成本超限: ${cost:.6f} > ${max_cost}")
 
+    # 9. 特征来源（可选）—— 用来证明"Redis 那条路真的被走过了"。
+    #
+    #    这条断言是为一个很隐蔽的坑准备的：开关默认 false + 没人写行为事件
+    #    ⇒ 每次评测都走 fallback 分支，**新代码在评测里从未被执行过**，
+    #    而报告显示"基线没变"。那不是"没有回归"，那是"没测到"。
+    expected_source = a.get("user_profile_source")
+    if expected_source:
+        actual = (agents.get("user_profile") or {}).get("data", {}).get("source")
+        if actual != expected_source:
+            failures.append(
+                f"user_profile.source 期望 {expected_source}，实际 {actual}"
+                f" —— 特征层那条路没有被走到"
+            )
+
     return failures
 
 
 # ── 执行 ────────────────────────────────────────────────────
 
-def run_case(case: dict[str, Any], api: str, timeout_s: float) -> dict[str, Any]:
+def fetch_server_config(api: str) -> dict[str, Any]:
+    """
+    读【服务端自己】的运行时配置。
+
+    必须是服务端的，不是本进程的：runner 和 uvicorn 是两个进程，各自读
+    .env，还可能被命令行上的环境变量覆盖成不同的值（实测踩过 ——
+    我给服务端加了 ECOM_FEATURE_STORE_ENABLED=true，runner 那边没有，
+    于是用例被误判成"配置不满足"而跳过）。
+
+    用本进程的设置去判断"服务端开没开这个开关"，正是那种
+    "本地跑对了、换台机器就错"的判断。
+    """
+    try:
+        with urllib.request.urlopen(f"{api}/health", timeout=5) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return {}
+
+
+def skip_reason(
+    case: dict[str, Any], server_config: dict[str, Any]
+) -> str | None:
+    """
+    用例声明了前置条件、而【服务端】配置不满足时，返回跳过理由。
+
+    为什么要"跳过"而不是"让它失败"：这类用例要证明的是"某条路真的被
+    走过了"，而对应的开关默认是 false。让它失败，默认配置下的通过率会
+    凭空掉一档，看起来像回归 —— 而实际上什么都没坏。
+    跳过 + 写明原因，既不为假配置背书，也不制造假回归。
+    """
+    if case.get("requires_feature_store") and not server_config.get(
+        "feature_store_enabled"
+    ):
+        return "服务端 ECOM_FEATURE_STORE_ENABLED 不是 true"
+    return None
+
+
+def run_case(
+    case: dict[str, Any],
+    api: str,
+    timeout_s: float,
+    server_config: dict[str, Any],
+) -> dict[str, Any]:
+    reason = skip_reason(case, server_config)
+    if reason is not None:
+        return {
+            "id": case["id"],
+            "note": case.get("note", ""),
+            "passed": False,
+            "skipped": True,
+            "skip_reason": reason,
+            "failures": [],
+            "http_status": None,
+            "wall_ms": 0.0,
+            "total_latency_ms": None,
+            "product_count": 0,
+            "copy_count": 0,
+            "copies_sample": [],
+            "usage": None,
+        }
+
     body = json.dumps(case["request"], ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         f"{api}/api/v1/recommend", data=body,
@@ -209,14 +283,19 @@ def run_case(case: dict[str, Any], api: str, timeout_s: float) -> dict[str, Any]
 
 
 def summarise(runs: list[dict[str, Any]]) -> dict[str, Any]:
-    ok = [r for r in runs if r.get("passed")]
-    lat = [r["total_latency_ms"] for r in runs if r.get("total_latency_ms")]
+    # 跳过的用例不参与任何统计 —— 它们根本没发请求，混进去会污染
+    # 延迟/成本的分位数。
+    graded = [r for r in runs if not r.get("skipped")]
+    skipped = [r for r in runs if r.get("skipped")]
+    ok = [r for r in graded if r.get("passed")]
+    lat = [r["total_latency_ms"] for r in graded if r.get("total_latency_ms")]
     costs = [
-        r["usage"]["cost_usd"] for r in runs
+        r["usage"]["cost_usd"] for r in graded
         if (r.get("usage") or {}).get("cost_known") and r["usage"].get("cost_usd") is not None
     ]
     tokens = [
-        r["usage"]["output_tokens"] for r in runs if (r.get("usage") or {}).get("output_tokens")
+        r["usage"]["output_tokens"] for r in graded
+        if (r.get("usage") or {}).get("output_tokens")
     ]
 
     def pct(vals: list[float], p: float) -> float | None:
@@ -228,8 +307,11 @@ def summarise(runs: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "cases": len(runs),
+        "graded": len(graded),
+        "skipped": len(skipped),
         "passed": len(ok),
-        "pass_rate": round(len(ok) / len(runs), 3) if runs else 0.0,
+        # 通过率的分母是【实际跑过的】，不是用例总数 —— 跳过的没发请求
+        "pass_rate": round(len(ok) / len(graded), 3) if graded else 0.0,
         "latency_p50_ms": round(statistics.median(lat), 1) if lat else None,
         "latency_p95_ms": pct(lat, 95),
         "cost_mean_usd": round(statistics.mean(costs), 6) if costs else None,
@@ -254,6 +336,9 @@ def build_report(runs: list[dict[str, Any]], api: str) -> dict[str, Any]:
             "thinking_disabled": settings.llm_disable_thinking,
             "thinking_exempt": settings.llm_thinking_exempt_agents,
             "mcp_wms_enabled": settings.mcp_wms_enabled,
+            # 特征层开关会改变 user_profile 的数据来源（redis/fallback），
+            # 进而改变画像质量 —— 不带这个信息的前后对比是可比的假象。
+            "feature_store_enabled": settings.feature_store_enabled,
             "python": sys.version.split()[0],
             "api": api,
         },
@@ -338,12 +423,20 @@ def main() -> int:
         print("       先启动：cd python && .venv/Scripts/python.exe -m uvicorn main:app --port 8000")
         return 2
 
+    # 服务端的运行时配置（决定哪些用例会被跳过），和探活是同一次往返
+    server_config = fetch_server_config(args.api)
     print(f"跑 {len(cases)} 条用例 -> {args.api}")
+    print(f"  服务端配置: feature_store={server_config.get('feature_store_enabled')}"
+          f"  mcp_wms={server_config.get('mcp_wms_enabled')}")
     t0 = time.perf_counter()
     runs = []
     for i, case in enumerate(cases, 1):
-        r = run_case(case, args.api, args.timeout)
+        r = run_case(case, args.api, args.timeout, server_config)
         runs.append(r)
+        if r.get("skipped"):
+            print(f"  [{i:>2}/{len(cases)}] {r['id']:<10} SKIP"
+                  f"  {r['skip_reason']}")
+            continue
         mark = "PASS" if r["passed"] else "FAIL"
         extra = "" if r["passed"] else f"  <- {r['failures'][0][:60]}"
         print(f"  [{i:>2}/{len(cases)}] {r['id']:<10} {mark}"
@@ -362,7 +455,11 @@ def main() -> int:
 
     s = report["summary"]
     print("\n" + "=" * 66)
-    print(f"通过 {s['passed']}/{s['cases']}  ({s['pass_rate']:.0%})   总耗时 {elapsed:.0f}s")
+    # 分母是【实际跑过的】，不是用例总数 —— 跳过的那些根本没发请求
+    line = f"通过 {s['passed']}/{s['graded']}  ({s['pass_rate']:.0%})   总耗时 {elapsed:.0f}s"
+    if s.get("skipped"):
+        line += f"   （另有 {s['skipped']} 条因配置跳过）"
+    print(line)
     print(f"  延迟 p50/p95 : {s['latency_p50_ms']} / {s['latency_p95_ms']} ms")
     print(f"  平均成本     : ${s['cost_mean_usd']}" if s["cost_mean_usd"] is not None
           else "  平均成本     : n/a（价格未知）")
@@ -374,7 +471,7 @@ def main() -> int:
     else:
         print("\n提示：下次跑时加 --baseline <本次报告路径> 可打印差值。")
 
-    return 0 if s["passed"] == s["cases"] else 1
+    return 0 if s["passed"] == s["graded"] else 1
 
 
 if __name__ == "__main__":

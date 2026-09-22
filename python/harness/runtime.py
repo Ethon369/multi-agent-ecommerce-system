@@ -3,10 +3,11 @@ Agent 运行时 —— 承载「这次调用还能不能打」这件事。
 
     为什么熔断器必须按【agent 名】索引，而不是挂在 agent 实例上
     ──────────────────────────────────────────────────────
-    这个进程里同时存在【两套】agent 实例：
-        orchestrator/graph.py:51-55    模块导入时构造 4 个（全局单例）
-        orchestrator/supervisor.py:50  构造时又构造 4 个
-    外加 main.py:38 和 graph.py:55 各自一个 ABTestEngine。
+    这个进程里【曾经】同时存在两套 agent 实例：
+        orchestrator/graph.py          模块导入时构造 4 个
+        orchestrator/supervisor.py     构造时又构造 4 个
+    （现已统一走 harness/deps 的组合根。但"按名索引"这个设计保留 ——
+     它让"实例有几个"不再是正确性的前提。）
 
     若熔断器挂在实例上，同一个逻辑 Agent 会有两份互不相干的健康状态：
     `/recommend` 打挂了 product_rec，`/recommend/graph` 完全不知情，

@@ -49,9 +49,54 @@ class Settings(BaseSettings):
     #     ECOM_LLM_THINKING_EXEMPT_AGENTS=marketing_copy
     llm_thinking_exempt_agents: str = ""
 
-    # Redis
-    redis_url: str = "redis://localhost:6379/0"
-    feature_ttl_seconds: int = 86400
+    # ── Redis 实时特征 ──────────────────────────────────────────
+    # 开关默认 false：和 MCP 同一个理由 —— 新引入的外部依赖，
+    # 默认关闭 + 显式启用，保证现有链路零破坏。
+    #
+    # 打开前先灌行为数据，否则每个用户都是"读到了但没数据"：
+    #     python scripts/seed_behavior.py --reset
+
+    # 是否让用户画像 Agent 去 Redis 读实时行为特征（而不是用内置兜底值）
+    feature_store_enabled: bool = False
+
+    # Redis 连接串。两个坑，都是实测踩出来的：
+    #
+    # ⚠️ 用 `127.0.0.1`，不要用 `localhost`。
+    #    `localhost` 会先解析到 IPv6 的 `::1`，而本机 Redis 只监听 IPv4 ——
+    #    连接先在 `::1` 上挂约 2 秒才回落。实测首次 PING：
+    #         localhost   2052.3 ms      127.0.0.1   2.4 ms
+    #    这个 2 秒正好大于请求路径的超时，会把连接掐断并造成【永久降级】。
+    #
+    # ⚠️ 本机 6379 上是一个【原生 Redis 5.0】，它不支持 HELLO 命令，而
+    #    redis-py 5+ 默认走 RESP3、建连时会先发 HELLO —— 所以客户端必须
+    #    显式指定 protocol=2（见 services/feature_store.py）。
+    #    RESP2 在 Redis 7.x 上同样合法，这不是"只在本机能跑的 hack"。
+    redis_url: str = "redis://127.0.0.1:6379/0"
+
+    # 特征读取超时（秒）。
+    # 必须【小于】 agent_timeout_user_profile(5.0) —— 让 Redis 先超时，
+    # 画像 Agent 还有余量走 fallback，而不是自己先被 wait_for 切断。
+    feature_store_timeout_s: float = 0.5
+
+    # 特征窗口（天）。滑动窗口由【读取时的 score 区间】强制，
+    # 这个值只决定 purchase_count 的统计窗口宽度。
+    feature_window_days: int = 30
+
+    # GC 用的 key 过期时间（秒），默认 30 天。
+    #
+    # ⚠️ TTL 不是窗口。EXPIRE 每次写入都会被刷新，所以它只对
+    # "再也不来的用户"生效 —— 活跃用户的 ZSET 依然会无界增长。
+    # 真正阻止增长的是每次写入时的 ZREMRANGEBYSCORE 修剪（见 feature_store.py）。
+    # 这个 TTL 只是最后一道兜底。
+    feature_ttl_seconds: int = 2592000
+
+    # 计算"活跃时段"用的时区偏移（小时）。
+    #
+    # 必须显式固定：Dockerfile 是 python:3.12-slim 且没有 ENV TZ，
+    # 容器里是 UTC、本机是中国时区 —— 不固定的话同一个用户在容器里
+    # 会算出差 8 小时的 active_hours，而 LLM 照样拿它当"活跃时段"用。
+    # 中国无夏令时，固定 +08:00 是正确的，且不依赖 tzdata 这个传递依赖。
+    feature_tz_offset_hours: int = 8
 
     # Milvus
     milvus_host: str = "localhost"
@@ -60,10 +105,6 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "sqlite:///./ecommerce.db"
-
-    # A/B Testing
-    ab_test_enabled: bool = True
-    ab_test_default_bucket_count: int = 100
 
     # Agent 超时（秒）——【整个 run() 的总预算】，不是单次尝试的预算。
     #
