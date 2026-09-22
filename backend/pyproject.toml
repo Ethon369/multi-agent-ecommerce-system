@@ -1,0 +1,52 @@
+# 只放工具配置，不声明 [project] —— 这个目录是应用目录，不是要发布的包。
+# （没有 [project] 段时，pytest/coverage 只把这里当配置源，不会改变导入行为。）
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 不需要 pytest-asyncio：anyio 自带 pytest 插件（见 tests/conftest.py）。
+# `-q` 让本地与 CI 的输出一致，避免"CI 上和本地看起来不一样"。
+addopts = "-q"
+# 警告不当作错误，但保留可见性。
+filterwarnings = ["default"]
+
+[tool.coverage.run]
+source = ["."]
+# 排除规则要能被解释清楚，否则覆盖率就变成数字游戏。
+#   tests/*   —— 测试代码本身不计入覆盖率（没有意义）
+#   .venv/*   —— 第三方依赖
+#   eval/*    —— CLI 入口（runner / judge）。它们是【端到端驱动脚本】，
+#                正确的验证方式是"真的跑一遍并产出 eval_results/"，
+#                而不是单测（要测就得起真服务 + 真 LLM，那已经不算单测了）。
+#                实测：不排除时整体 75.56%，排除后 85.42%。
+#                两个数字都会写进文档 —— 排除掉的是"不适合用单测衡量"的
+#                部分，不是"测不过去的"部分。
+#   scripts/* —— 同类：seed_behavior / init_wms_db 是运维脚本，
+#                靠执行验证（跑完会用消费端的视角读回来自证）。
+omit = [
+    "tests/*",
+    ".venv/*",
+    "*/__pycache__/*",
+    "eval/*",
+    "scripts/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+# 覆盖率门禁。实测 85.42%，门槛定在 83 —— 留约 2.4 个点的余量。
+#
+# 为什么不贴着实测值设：门禁的作用是"挡住明显退化"，不是"每次加十行
+# 代码就要求人肉补测试"。贴着设会让任何一次正常改动都变红，
+# 而一个天天变红的门禁等同于没有门禁（大家会习惯性地绕过它）。
+# 余量也不是白留的：它对应大约 50 行未测代码，足够写清一个功能增量。
+fail_under = 83
+# 这些行不计入统计，理由都很具体：
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    # 抽象方法的占位实现（BaseAgent._execute）
+    "raise NotImplementedError",
+    # 类型标注的重载分支
+    "@overload",
+    "^\\.\\.\\.$",
+]
