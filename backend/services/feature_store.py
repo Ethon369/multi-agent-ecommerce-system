@@ -298,22 +298,50 @@ class FeatureStore:
             所以启动时在这里把这一次代价付掉。失败只记日志、不阻断启动 ——
             Redis 是可选依赖，它不在不该让整个应用起不来。
         """
+        # 预热给的预算比请求路径宽：这里阻塞的是【启动】，不是用户请求。
+        return await self._ping(self.timeout_s * 10, event="feature_store.warmup")
+
+    async def ping(self) -> bool:
+        """
+        探活：带【请求路径】预算的 PING。`/ready` 用它。
+
+            为什么和 warmup() 分开
+            ────────────────────
+            warmup 在启动时调一次，预算给到 `timeout_s * 10` —— 那段时间
+            阻塞的是启动流程，慢一点没人在等。而 `/ready` 会被编排系统
+            每几秒打一次：用 5 秒预算会让探针本身变成负载，Redis 挂掉时
+            还会把探针请求堆起来。
+
+            所以这里用请求路径的预算（默认 0.5s）。
+
+        同 warmup：**永不抛异常**。
+        就绪探针因为一个可选依赖不可用而返回 500，是最糟的形态 ——
+        它会让编排系统把一个其实还在正常降级提供服务的实例摘掉。
+        """
+        return await self._ping(self.timeout_s, event="feature_store.ping")
+
+    async def _ping(self, timeout_s: float, *, event: str) -> bool:
+        """
+        warmup 与 ping 共用的实现。
+
+        抽出来的原因很直接：两者只差【预算】和【日志事件名】，
+        而那正是它们被分成两个方法的原因 —— 逻辑本身没有理由写两遍。
+        """
         if self.redis is None:
             return False
         started = time.perf_counter()
         try:
-            # 预热给的预算比请求路径宽：这里阻塞的是【启动】，不是用户请求
-            async with asyncio.timeout(self.timeout_s * 10):
+            async with asyncio.timeout(timeout_s):
                 await self.redis.ping()
         except Exception as exc:
             logger.warning(
-                "feature_store.warmup_failed", error=str(exc)[:200],
+                f"{event}_failed", error=str(exc)[:200],
                 error_type=type(exc).__name__,
-                note="请求路径会走 fallback，不阻断启动",
+                note="请求路径会走 fallback，不阻断",
             )
             return False
         logger.info(
-            "feature_store.warmup_ok",
+            f"{event}_ok",
             latency_ms=round((time.perf_counter() - started) * 1000, 1),
         )
         return True

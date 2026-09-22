@@ -24,6 +24,30 @@ PYTHON_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PYTHON_DIR not in sys.path:
     sys.path.insert(0, PYTHON_DIR)
 
+# ── 测试环境的配置默认值 ────────────────────────────────────────
+#
+# ⚠️ 必须在【任何测试模块导入 main 之前】设好。
+# 原因：main.py 在【导入期】就调 configure_logging(settings.log_json, ...)，
+# 而 get_settings() 带 @lru_cache —— 设晚了就再也不会重读。
+# tests/test_api.py 按字母序是第一个被导入的测试模块，所以这几行
+# 放在 conftest 的模块级（conftest 一定先于所有测试模块加载）。
+
+# 控制台格式而不是 JSON：pytest 的失败输出里，一行 JSON 几乎没法读，
+# 而且它会把 assert 的上下文淹没掉。
+os.environ.setdefault("ECOM_LOG_JSON", "false")
+
+# 把级别放回 DEBUG。configure_logging 用 make_filtering_bound_logger
+# 设了一个【全局】的过滤级别，生产上要 INFO；但生产代码里有 3 处
+# logger.debug（tool.registered / mcp.tool_skipped_write / harness/llm.py），
+# 级别卡在 INFO 会让它们在测试里彻底消失 —— 那类"这个 debug 事件到底
+# 有没有发"的问题就没法回答了。测试里恢复成"什么都不过滤"。
+os.environ.setdefault("ECOM_LOG_LEVEL", "DEBUG")
+
+# 鉴权默认必须是关的：接口级测试直接打路由，不该被迫带 key。
+# 这一条同时也是断言的一部分（见 test_api.py 的默认配置用例）——
+# 它守的是"新能力默认不启用"这条项目约定。
+os.environ.setdefault("ECOM_API_KEY_ENABLED", "false")
+
 
 @pytest.fixture
 def anyio_backend() -> str:

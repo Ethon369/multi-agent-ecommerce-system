@@ -120,6 +120,57 @@ def _thinking_exempt() -> set[str]:
     return {a.strip() for a in raw.split(",") if a.strip()}
 
 
+#: 只在第一次遇到"没配 API Key"时报一次错。
+#: 四个 Agent 各报一次会把启动日志刷成四行同样的错误，反而让人以为
+#: 有四个不同的问题。
+_warned_missing_key = False
+
+
+def _resolve_api_key(agent_name: str) -> str:
+    """
+    取 API Key；为空时返回占位符并**大声**报错，而不是让 SDK 抛异常。
+
+        为什么不能让 SDK 在这里抛（实测踩到的坑）
+        ───────────────────────────────────────
+        openai SDK 在【构造期】就校验凭据，缺了直接抛
+        `OpenAIError: Missing credentials`。
+
+        而客户端的构造发生在模块导入期（main.py 在模块级取 supervisor，
+        supervisor 又去构造 4 个 Agent）。于是"没配 key"的真实表现是
+        ——**整个进程起不来，连测试都收集不了**：
+
+            $ pytest tests/
+            ERROR tests/test_api.py - openai.OpenAIError: Missing credentials
+
+        一个全新 clone 下来的人（以及 CI）就是这样被挡在门外的：
+        他只想跑一下测试，却被告知要先去申请一个 LLM 凭据。
+
+        换成占位符之后，行为变成与"key 过期 / 被吊销"完全一致：
+        客户端构造成功 → 调用时 401 → Agent 走 fallback ——
+        也就是这个项目本来就设计好并实测过的降级路径（故障注入 4/4 返回 200）。
+        **少一个凭据不等于服务不能启动，它等于所有 Agent 降级。**
+
+        但绝不能静默：真正的误配必须能在日志里看见 —— 所以这里报 error，
+        启动时 lifespan 还会再报一次带处置建议的。
+    """
+    global _warned_missing_key
+    api_key = get_settings().llm_api_key
+    if api_key:
+        return api_key
+
+    if not _warned_missing_key:
+        _warned_missing_key = True
+        logger.error(
+            "llm.api_key_missing",
+            agent=agent_name,
+            detail=(
+                "ECOM_LLM_API_KEY 为空：LLM 客户端仍会构造，但所有调用都会失败，"
+                "Agent 将全部走降级路径返回。"
+            ),
+        )
+    return "MISSING_API_KEY"
+
+
 def build_chat_model(
     agent_name: str,
     *,
@@ -150,7 +201,7 @@ def build_chat_model(
         extra_body["thinking"] = {"type": "disabled"}
 
     kwargs: dict[str, Any] = {
-        "api_key": settings.llm_api_key,
+        "api_key": _resolve_api_key(agent_name),
         "base_url": settings.llm_base_url,
         "model": settings.llm_model,
         "temperature": temperature,

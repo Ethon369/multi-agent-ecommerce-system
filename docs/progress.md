@@ -4,12 +4,18 @@
 > 目标：投「AI 应用 / Agent 开发岗（校招）」，突出 **harness 工程能力** 与 **MCP 双侧**
 > 原始计划：`docs/mcp-integration-prd.md`（MCP）、`docs/extension-guide.md`（二次开发指南）
 
-**一句话现状**：**七个阶段全部完成**。harness 运行时保障层、MCP 三端（Server + Client + Host）、
+**一句话现状**：**七个阶段全部完成**，并且 **P0/P1 工程缺口已清零**。
+harness 运行时保障层、MCP 三端（Server + Client + Host）、
 评测闭环、诚实化全部落地，每一项都有实测证据。
 
-**最近一轮（2026-09-22）**：把 Redis 实时特征层从"假的"变成了"真的" ——
+**最近一轮（2026-09-22 下午）**：**清 P0 / P1 缺口** —— 修掉 3 个 P0
+（compose 路径失效、容器内跑 reload、5 条路由零测试）+ 4 个 P1
+（structlog 从未配置、零引用依赖、无鉴权+CORS 通配、无全局异常处理器）。
+测试 **169 → 208**。详见文末「本轮（2026-09-22 下午）：清 P0/P1」。
+
+**上一轮（2026-09-22 上午）**：把 Redis 实时特征层从"假的"变成了"真的" ——
 它原先**根本没接线**（全仓库没有一处 `FeatureStore(...)`），现在被**重写并接进**画像 Agent
-（开关默认关闭）。详见文末「本轮」。
+（开关默认关闭）。详见文末「本轮（2026-09-22）」。
 
 ---
 
@@ -161,7 +167,9 @@ MCP 关  15/15 可用   source=fallback
 ### 工程指标
 
 - 测试：**5 → 144**（另有 1 条默认跳过的慢速完整链路）；2026-09-21 删掉 A/B 引擎及其 5 条测试后为 **139**；
-  2026-09-22 接上 Redis 特征层后为 **168 passed, 1 skipped**
+  2026-09-22 接上 Redis 特征层后为 **168 passed, 1 skipped**；
+  2026-09-22 下午补上接口级测试后为 **207 passed, 1 skipped**（共 208 条，新增 39 条）
+- 接口级测试：**0 → 39**。新增 `tests/test_api.py`，覆盖全部 5 条路由 + 错误信封 + 三个中间件
 - commit：10 个（每个都是独立可验证的单元）
 - MCP 单次调用成本：**约 1,150 ms**（短连接重启子进程，`import mcp` 占约 1 秒）
 
@@ -345,3 +353,226 @@ product_rec:  candidate_count=15 reranked=5       ← 但重排是从全部 15 �
 
 **结果**：测试 139 → **168 passed, 1 skipped**；评测 **12/12**；
 README 的「❌ 不可信的」表**少了一行**（对照表变短 = 项目变干净）。
+
+---
+
+## 附：本轮（2026-09-22 下午）做了什么 —— 清 P0 / P1 工程缺口
+
+**起因**：对后端做了一次开发完成度审计（核心业务逻辑 / API 接口 /
+数据库交互 / 异常处理 / 单元测试五个维度），查出 3 个 P0 + 4 个 P1。
+排序依据是"**会不会在演示现场或面试追问时出丑**"，不是工作量。
+
+### P0（都会在现场翻车）
+
+| # | 缺口 | 根因 | 处理 |
+|---|---|---|---|
+| P0-1 | `docker compose up` 必然失败 | 目录已从 `python/` 改名 `backend/`，但 `build.context` 仍写 `./python` | 改 `./backend`；`start-python.bat` 里的 `cd /d "%~dp0python"` 同因失效，一并修 |
+| P0-2 | 容器内以 reload 模式运行 | `Dockerfile` CMD 是 `python main.py`，而 `main.py` 的 `__main__` 硬编码 `reload=True` | CMD 改直接起 uvicorn；`__main__` 的 reload 改由 `ECOM_DEV_RELOAD` 控制，**默认 false** |
+| P0-3 | 5 条路由**零**接口级测试 | 168 个单测全在 harness/agent/service 内部，一个 HTTP 请求都不发 | 新增 `tests/test_api.py`（39 条） |
+
+### P1
+
+| # | 缺口 | 处理 |
+|---|---|---|
+| P1-1 | **`structlog` 从未 `configure()`** —— 文档写的"结构化 JSON 日志"实际是默认彩色文本（原 `configure_logging()` 在"删死代码"那轮因 0 引用被删，删得对，但能力也一起没了） | 新增 `logging_setup.py`，`main.py` 启动时调一次。实测输出确为逐行 JSON，且 request_id 已贯穿每个 Agent 的日志 |
+| P1-2 | 5 个零引用依赖 + compose 里两个没人用的容器 | 删 `pymilvus` / `sqlalchemy` / `numpy` / `prometheus-client` / `langchain-community`，删 milvus 与 mysql 服务，删 `milvus_*` / `database_url` 配置项。`httpx` 与 `python-dotenv` **保留**并在清单里写明功能性理由（TestClient / .env 加载） |
+| P1-3 | 无鉴权；CORS 为 `allow_origins=["*"]`，而 `/metrics` 会暴露成本与单价指纹 | 新增 `ApiKeyMiddleware`（**默认关闭**，`/health` 与文档路径免鉴权，时序安全比较）；CORS 来源改为配置项，默认是开发期端口 |
+| P1-4 | 无全局异常处理器；`AgentResult.error` 里的 `str(exc)` 会外泄内部细节 | 新增 `web/errors.py`：类型化错误 + 4 个处理器，统一 `{code, message, request_id}`；对外一句通用文案，对内完整堆栈 |
+
+### 顺带做掉的一件 P2（因为它是 P1-4 的另一半）
+
+`X-Request-ID` 响应头 + 请求 ID 贯穿：新增 `RequestIdMiddleware`，
+并让 `supervisor` / `graph` / `copilot` 复用已绑定的 id
+（原先各处无条件 `new_request_id()`，同一次请求在日志里有两个 id）。
+现在 **响应头 = 响应体 request_id = 日志 request_id**，实测端到端一致。
+
+### 过程中发现并修掉的三个**新**问题
+
+这三个都是本次改动/验证过程中实测暴露的，此前没人知道：
+
+1. **`.env` 残留旧配置键会让服务起不来。** 删掉 `Settings` 里的
+   `milvus_host` / `database_url` 之后，`extra="forbid"` 让启动直接
+   `ValidationError`。已清理 `.env`，并在 `.env.example` 顶部写了升级提示。
+   **保留严格模式**（不改成 `extra="ignore"`）：静默忽略拼错的变量名
+   才是更难查的坑。
+2. **compose 里 `environment` 的优先级高于 `env_file`。**
+   `ECOM_LLM_API_KEY=${ECOM_LLM_API_KEY:-}` 展开成空串后**覆盖掉了
+   `.env` 里的真实 key**，且不报错。靠 `docker compose config`
+   看到 `ECOM_LLM_API_KEY: ""` 才发现。现在 `environment` 里只留
+   `ECOM_REDIS_URL` 这一项（容器内必须用服务名）。
+3. **兜底的 500 处理器读不到 request_id。** `ServerErrorMiddleware`
+   永远在最外层，异常穿过 `RequestIdMiddleware` 时 contextvar 已复位，
+   `current_request_id()` 返回 `None`。改为**先读 `scope["state"]`、
+   再回落 contextvar**；500 还得自己补 `X-Request-ID` 响应头
+   （其它三个处理器在中间件内层，头是自动加的）。
+   → 被 `test_api.py` 拦下，详见 CLAUDE.md 陷阱 10。
+
+### 未做（明确留给下一轮）
+
+- **P2 剩余项**：`/recommend/graph` 与主接口的契约不一致（无 `response_model`、
+  未初始化时用 body 里的 error 字段而不是 HTTP 错误码）；无 `/ready`
+  （探活与就绪未分离）；无 CI；无覆盖率统计；无并发测试。
+- **文档路径残留**：`CLAUDE.md` / `README.md` / `docker-compose.yml` /
+  `start-python.bat` / `.env.example` 已修。但 `docs/` 下更早的阶段文档
+  （`mcp-integration-prd.md`、`code-walkthrough.md`、`stages/*.md`、
+  `architecture.md`、`interview-guide.md` 等）里仍有约 **72 处** `python/`。
+  这些多为历史记录，按 append-only 原则未改写，见 `CLAUDE.md` 第二节的提示。
+
+### 结果
+
+- 测试：**168 passed + 1 skipped → 207 passed + 1 skipped**（新增 39 条接口级测试）
+- 接口级覆盖：**0 → 5/5 路由**
+- 未实测数字：**0**（原先文档里的"结构化 JSON 日志"这一条已成为事实，而非宣称）
+- 实测端到端（真 LLM，重启后）：`/recommend` **200 / 3474.1 ms / 3 商品 / 3 文案**，
+  `body request_id == X-Request-ID 头`；404 / 422 / 405 均为统一错误信封
+
+---
+
+## 附：本轮（2026-09-22 傍晚）做了什么 —— 清 P2 + 建 CI
+
+**起因**：上一轮清完 P0/P1 后，报告里还剩 4 条 P2。另外审计的 04.2 节
+还列着一条「无限流」没归入 P2，成本低，一并做了。
+
+### P2-A `/recommend/graph` 契约统一
+
+原先这个端点返回一个**缩小版对象**：没有 `response_model`（OpenAPI 里
+没有 schema，前端生成不了类型）、没有 `agent_results`、没有 `harness`，
+而且出错时返回 `200 + {"error": "Graph not initialized"}` ——
+客户端按 status code 判断成就会认为它成功了。
+
+改动：
+- 加 `response_model=RecommendationResponse`，**与主接口同一个契约**；
+- 新增 `orchestrator/reporting.py`，把 `build_harness_report()` 从
+  `SupervisorOrchestrator` 的私有静态方法里提出来共用（graph 依赖另一个
+  编排器的私有方法，是错的方向依赖）。顺带发现原方法的 `request_id`
+  参数从来没被用到；
+- 新增 `graph.build_response()` 做键名归一化：图内部把两次 product_rec
+  调用记成 `product_recall` / `rerank`，响应契约里只有 `product_rec`
+  （**重排后**的结果，与 supervisor 口径一致）。不归一化的话前端会看到
+  一个它不认识的 `product_recall`，而少的那个 `product_rec` 恰好是它要的；
+- 未装配时改抛 `ServiceUnavailableError` → **503 + 统一错误信封**；
+- 补上与主接口一致的 `_collect_metrics()` —— 否则 `/api/v1/metrics`
+  会随"调用者挑了哪个端点"变化，那它就不是系统指标了。
+
+**实测**：两个端点的响应顶层键**完全相同**；graph 的 `agent_results`
+归一化为 `['inventory','marketing_copy','product_rec','user_profile']`；
+`harness.usage` 有真实数字（3 次 LLM 调用 / 963 in / 207 out / $0.000462）
+—— 这同时证明了 `usage_scope()` 能穿过 LangGraph 的节点任务（那是个
+真实的风险点：账本靠 contextvar，而节点跑在各自的任务里）。
+
+### P2-B `/ready` 就绪探针（与 `/health` 语义分离）
+
+| | `/health` | `/ready` |
+|---|---|---|
+| 含义 | **存活**：进程还在、能响应 HTTP | **就绪**：此刻能否履行契约 |
+| 检查 | 不检查任何依赖 | 检查流水线是否装配完 |
+| 失败处置 | **重启** | **等待**（重启解决不了） |
+
+**关键设计判断**：可选依赖（Redis / MCP）**不参与**就绪判断。
+因为本系统整个卖点就是"外部依赖挂了也能降级交付"（Redis→fallback、
+MCP→回落 `Product.stock`、LLM→降级结果，全部实测 200）。把它们算进就绪，
+会让编排系统摘掉一个其实还在正常降级服务的实例 —— 等于亲手丢掉降级能力。
+它们只被**汇报**在 `optional` 里（Redis 那条是真实探测，0.5s 预算）。
+
+另新增 `FeatureStore.ping()`：与 `warmup()` 的区别是预算（请求路径 0.5s
+vs 启动 5s）。`/ready` 会被每几秒打一次，用 5s 预算会让探针本身变成负载。
+两者共用 `_ping()` 实现，事件名保持不变。
+
+### P2-C CI + 覆盖率统计
+
+`.github/workflows/ci.yml` 两个 job：
+`backend`（安装依赖 → `compileall` 语法检查 → `pytest --cov` 门禁）、
+`compose-config`（`docker compose config`，专门守 P0-1 那类路径回归）。
+
+**⚠️ 建 CI 之前先做了一次"全新检出"验证，结果发现测试根本跑不起来：**
+
+```
+$ pytest tests/          # 全新 clone，没有 .env
+ERROR tests/test_api.py - openai.OpenAIError: Missing credentials
+```
+
+根因：`main.py` 在**模块级**调 `get_supervisor()`，连锁构造 4 个 Agent
+及其 LLM 客户端，而 openai SDK 在**构造期**校验凭据、缺了直接抛。
+于是"没配 key"的真实表现是**整个进程起不来、连测试都收集不了**。
+
+而这个项目自己写在 `harness/deps.py` 的设计意图恰恰相反：
+> 用 `@lru_cache` 而不是模块级全局变量……模块级全局在 import 时就会构造
+> 全部 Agent（包括读 .env、建 LLM 客户端）。而 MCP Server 进程、
+> 测试进程未必需要全部依赖。
+
+**模块级那次调用把惰性设计抵消掉了。** 三处修复：
+1. `harness/llm.py` 加 `_resolve_api_key()`：缺凭据时返回占位符并报一次
+   error，而不是让 SDK 抛。行为变成与"key 过期/被吊销"一致 ——
+   客户端能构造、调用时 401、Agent 走 fallback，也就是**本来就设计好的
+   降级路径**。少一个凭据不等于服务不能启动，它等于所有 Agent 降级。
+2. `main.py` 去掉模块级的 `get_supervisor()`，改在路由里取
+   （`@lru_cache` 之后就是一次字典查找）—— 让"import main"不再有副作用。
+3. `lifespan` 里补一条 `app.llm_key_missing` 的 error 日志（带处置建议），
+   保证误配在运行时一眼可见。
+
+**验证**：模拟 git clone（排除 `.venv` / `.env` / `*.db`）后
+`compileall` 通过、**231 passed + 1 skipped**、覆盖率 **85.61% ≥ 83**。
+同时给这条加了守卫 —— CI 里显式设 `ECOM_LLM_API_KEY: ""`，
+谁再把凭据变成测试的前提，CI 会红。
+
+覆盖率配置在 `backend/pyproject.toml`：
+- 排除 `tests/`、`eval/`、`scripts/` —— 后两者是 **CLI 入口**，正确的
+  验证方式是"真的跑一遍并产出 `eval_results/`"，不是单测。
+- **实测两个数字都记下来**：不排除时 **75.56%**，排除后 **85.42%**。
+  排除掉的是"不适合用单测衡量"的部分，不是"测不过去的"部分。
+- `fail_under = 83`（比实测留约 2.4 个点）。贴着实测设会让任何正常改动
+  都变红，而一个天天变红的门禁等同于没有门禁。
+
+### P2-D 并发正确性测试
+
+新增 `tests/test_concurrency.py`（8 条）。价值不在于"多测了几个函数"，
+而在于它守卫 `harness/breaker.py` 里一条**可被证伪的设计声明**：
+
+> 单线程事件循环下 `allow()` 与 `record()` 之间没有 await 点，所以不需要锁。
+
+一旦有人在两者之间插入 await（给 record 加个上报、给 allow 加个异步
+配置读取），就会出现丢失更新、以及 half_open 下放过多个探测。
+测试用 `await asyncio.sleep(0)` 在桩 Agent 里制造真交错，断言：
+- 20 个并发失败只产生**一次** `agent.circuit_tripped`（状态迁移幂等）
+- 20 个并发失败**一个都不丢**（窗口大小 == 执行次数）
+- 成功/失败混合并发时三个派生量彼此自洽
+- 被熔断拒绝的调用**不撑大窗口**（否则熔断器再也无法闭合）
+- half_open 下 10 个并发只放行**恰好 1 个**探测 ← 最容易被并发打穿的地方
+- 按 agent 名隔离：A 挂了不会连坐 B
+- 短路路径几乎零耗时（并发下同样成立）
+
+写这条时踩到一个自己的想当然：探测成功后窗口是 **0** 不是 1 ——
+`_close()` 会清空窗口（恢复后重新开始统计）。
+
+### 附带：限流（审计 04.2 的缺失项）
+
+`web/ratelimit.py`，进程内**滑动窗口**。为什么不是固定窗口：
+固定窗口在边界处有经典漏洞（第 59 秒打满 N 次、第 61 秒再打满 N 次
+= 两秒内放过 2N 次，即设计速率的两倍）。
+
+- **默认关闭**（`ECOM_RATE_LIMIT_ENABLED=false`）—— 与其它新能力同口径，
+  也因为 `eval/runner.py` 是串行快速连打做评测的，默认开启会把它卡在 429；
+- 按**凭据哈希**分桶，没有凭据才退到客户端 IP。**不读 `X-Forwarded-For`**
+  （可伪造，等于把"换个假 IP 就绕过"送出去）；
+- `/health`、`/ready` 免限流；
+- 429 走统一错误信封 + `Retry-After` + `X-RateLimit-*`；
+- 桶会**定期清扫**（每 512 次请求）—— "每个陌生 IP 留一个空 deque"
+  是这类限流器最容易漏的内存泄漏；
+- 中间件顺序调整为 `CORS → RequestId → RateLimit → ApiKey → 路由`：
+  限流在鉴权**外层**（未通过鉴权的洪水也被限流），在请求 ID **内层**
+  （429 也带 `X-Request-ID`）。
+
+**实测**（阈值 6 / 30s）：第 7 个非免检请求 → **429**，
+`code=rate_limited`、`Retry-After: 25`、`X-RateLimit-Limit: 6`、
+`X-RateLimit-Remaining: 0`、`X-Request-ID` 与 body 一致；
+期间 `/health` 与 `/ready` 仍然全 200。
+
+### 结果
+
+- 测试：**207 → 231 passed + 1 skipped**（新增 8 条并发 + 16 条接口/中间件）
+- 路由：**5 → 6**（新增 `/ready`），且两条推荐路径**契约完全一致**
+- 覆盖率：**0（未测过）→ 85.42%**，CI 门禁 83
+- CI：**从无到有**（两个 job，其中一个专门守 compose 路径回归）
+- 新增依赖：`pytest-cov`（唯一一项）
+
+

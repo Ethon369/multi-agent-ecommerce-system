@@ -1,0 +1,72 @@
+# ---------------------------------------------------------------------------
+# 依赖清单的维护规则（2026-09-22 起）
+#
+#   规则：这里的每一项都必须有【代码里的真实引用】，或者有明确的传递性理由。
+#        "感觉以后会用到"不是理由 —— 它换来的不是能力，是误导。
+#
+#   为什么专门写这条：本文件此前挂着 5 个零引用的包（pymilvus / sqlalchemy /
+#   numpy / prometheus-client / langchain-community），docker-compose.yml 里
+#   还为此起了 milvus 和 mysql 两个容器，而代码里一行都没用。这跟项目自己
+#   写在 CLAUDE.md 里的"诚实红线"是冲突的：面试官看到 pymilvus 会问
+#   "向量检索怎么做的"，而正确答案"其实没接"是最难看的答案。
+#   半个功能比没有功能更糟。
+#
+#   本次删掉的：pymilvus / sqlalchemy / numpy / prometheus-client /
+#              langchain-community —— 全部 grep 过，生产代码与测试均 0 import。
+#   保留的例外：见下面带 ⚠️ 的两条（httpx / python-dotenv），
+#              它们没有直接 import，但有明确的功能性理由。
+# ---------------------------------------------------------------------------
+
+# --- LLM / Agent ---
+# 地板对齐实际解析结果：原 `langchain>=0.3.0` 落后两个大版本，
+# 换台机器全新安装会解析到 API 不兼容的版本（本项目实际跑在 langchain 1.x 上）。
+langgraph>=1.2,<2
+langchain>=1.4,<2
+langchain-openai>=1.6,<2
+
+# --- Web / API ---
+# 注意：不装 `fastapi[standard]`。standard extra 会带进 fastapi-cli、uvicorn[standard]、
+# httpx 等一整套东西，而本项目只需要 uvicorn 一个。
+fastapi>=0.115,<1
+uvicorn>=0.34,<1
+
+# --- Data ---
+redis>=5.2,<7
+pydantic>=2.10,<3
+pydantic-settings>=2.7,<3
+
+# --- 可靠性 / 可观测 ---
+tenacity>=9.0,<10
+structlog>=24.4,<27
+
+# --- MCP ---
+# v2 稳定线（`pip install mcp` 默认装到的就是 2.x）。
+# 刻意【不装】langchain-mcp-adapters：它声明 mcp<2.0.0，会把这里降级到 v1；
+# 而它的招牌功能（把 MCP 工具转成 LangChain tool schema）langchain-core 已内置
+# —— MCP 的 {"name","description","input_schema"} 形状 convert_to_openai_function
+# 原生就认（已实测）。装了等于白装，还把版本拖回去。
+mcp>=2.0,<3
+
+# --- 杂项 ---
+# ⚠️ httpx 在本项目代码里没有直接 import，但它【必须显式声明】：
+#    starlette 的 TestClient（tests/test_api.py 用它做 5 条路由的接口级测试）
+#    需要它，而 starlette 只在 [full] extra 里声明这个依赖 —— 我们没装那个 extra。
+#    目前 httpx 能被装上是靠 langchain-core 的硬依赖捎带进来的。
+#    「依赖别人的依赖来满足自己的测试」装出来的环境是偶然成立的，
+#    别人的依赖一变这里就断。显式写下来，是为了让"测试能跑"不依赖第三方包的内部实现。
+httpx>=0.28,<1
+
+# ⚠️ python-dotenv 同样没有直接 import，但它是【功能性必需】的：
+#    config/settings.py 的 `env_file=".env"` 由 pydantic-settings 转交给它来读，
+#    它也是 pydantic-settings 的硬依赖（已核对 requires 元数据）。
+#    显式列出来是为了让"配置从 .env 读"这件事在依赖清单里可见 ——
+#    否则新人会把 .env 当成"某个包顺手支持的"，而不是本项目的配置来源。
+python-dotenv>=1.0,<2
+
+# --- 测试 ---
+# 原本缺失，导致 tests/ 在全新安装后根本跑不起来。
+# 不需要 pytest-asyncio：anyio 自带 pytest 插件（已验证 anyio 4.15.1）。
+pytest>=8.0,<10
+# 覆盖率 + 门禁。配置在 pyproject.toml 的 [tool.coverage.*]，
+# 门槛 83（实测 85.42%）。CI 里用 `pytest --cov` 触发。
+pytest-cov>=6.0,<7

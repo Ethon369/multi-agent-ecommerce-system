@@ -1,8 +1,15 @@
 # Environment
+# ⚠️ `.env.*` 这一条是必需的，不只是保险：
+#    只写 `.env` 时，`backend/.env.bak_20260922` 这类**备份不会被忽略**，
+#    而备份里存的是真实 API Key —— `git add backend/` 会把它一起带进仓库。
+#    改配置前先备份是很自然的习惯，所以这条规则必须挡住那个习惯。
+#    （实测：`git check-ignore backend/.env.bak_before_p0p1` 在加这条之前是**未命中**。）
 .env
+.env.*
+!.env.example
 *.env.local
 
-# 评测产物：评测结果必须写到 python/ 【外面】。
+# 评测产物：评测结果必须写到 backend/ 【外面】。
 # 原因：uvicorn --reload 会盯着工作目录树里的 *.py，而且结果文件带时间戳、
 # 每次跑都不同 —— 让它们进入版本库或触发重启都没有意义。
 eval_results/
@@ -18,6 +25,14 @@ dist/
 build/
 .venv/
 venv/
+# 工具缓存。显式写出来而不是依赖工具自己生成的 .gitignore ——
+# 例如 .pytest_cache/ 内部确实有一个内容是 `*` 的 .gitignore 把自己屏蔽了，
+# 但那是 pytest 生成的、属于实现细节；换成别的版本/工具就没了。
+# 版本库里不该出现"因为我用了某个工具所以它恰好没被提交"这种运气。
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
 
 # Java
 target/
@@ -28,6 +43,13 @@ target/
 
 # Go
 bin/
+
+# 覆盖率产物（pytest --cov 会在 cwd 生成 .coverage）
+# 它们是"本机跑测试的副产品"，不是项目产物 —— 类比上面的 eval_results/。
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 
 # Database
 *.db

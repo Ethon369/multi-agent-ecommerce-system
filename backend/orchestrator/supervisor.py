@@ -21,21 +21,21 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
 
 import structlog
 
-from harness import get_runtime, new_request_id, request_context
+from harness import current_request_id, new_request_id, request_context
 from harness.deps import get_agents, get_pricing
 from harness.usage import usage_scope
 from models.schemas import (
-    HarnessReport,
-    HarnessUsageReport,
     Product,
     RecommendationRequest,
     RecommendationResponse,
     UserProfile,
 )
+
+from .reporting import build_harness_report
+
 logger = structlog.get_logger()
 
 
@@ -52,7 +52,16 @@ class SupervisorOrchestrator:
         self.inventory_agent = agents["inventory"]
 
     async def recommend(self, request: RecommendationRequest) -> RecommendationResponse:
-        request_id = new_request_id()
+        # 复用接入层（RequestIdMiddleware）已经绑好的 id，没有才新建。
+        #
+        # 为什么不能让这里无条件新建：同一次 HTTP 请求会出现两个 id ——
+        # X-Request-ID 响应头一个、响应体 request_id 一个，而日志用的是后者。
+        # 用户拿着响应头里的 id 去 grep 日志，会 grep 不到，看起来像"日志丢了"。
+        # 复用之后，响应头 / 响应体 / 日志三处是同一个值。
+        #
+        # 直接调用（测试、脚本）时没有接入层，current_request_id() 返回 None，
+        # 行为与改动前完全一致 —— 所以这不是行为变更，只是"有就沿用"。
+        request_id = current_request_id() or new_request_id()
         start = time.perf_counter()
 
         logger.info(
@@ -152,29 +161,6 @@ class SupervisorOrchestrator:
             products=final_products,
             marketing_copies=copies,
             agent_results=results,
-            harness=self._harness_report(request_id, results, usage_report),
+            harness=build_harness_report(results, usage_report),
             total_latency_ms=total_latency,
-        )
-
-    @staticmethod
-    def _harness_report(
-        request_id: str,
-        results: dict[str, Any],
-        usage_report: dict[str, Any],
-    ) -> HarnessReport:
-        """把运行时保障层的状态汇总成一份自述报告。"""
-        runtime = get_runtime()
-        return HarnessReport(
-            usage=HarnessUsageReport(**usage_report),
-            agents={
-                name: {
-                    "success": r.success,
-                    "latency_ms": round(r.latency_ms, 1),
-                    "confidence": r.confidence,
-                    "error": r.error,
-                    "breaker_state": runtime.breaker_for(name).state,
-                }
-                for name, r in results.items()
-            },
-            breakers=runtime.snapshot(),
         )

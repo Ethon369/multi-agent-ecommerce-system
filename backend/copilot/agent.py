@@ -47,7 +47,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from harness import build_chat_model, new_request_id, request_context
+from harness import build_chat_model, current_request_id, new_request_id, request_context
 from harness.tools.registry import ToolRegistry
 from harness.usage import usage_scope
 
@@ -142,7 +142,9 @@ class CopilotAgent:
 
     async def ask(self, message: str, session_id: str = "default") -> CopilotReply:
         start = time.perf_counter()
-        request_id = new_request_id()
+        # 复用接入层已绑好的 id（没有才新建），理由同 supervisor.recommend：
+        # 让 X-Request-ID 响应头、日志、以及调用方看到的 id 是同一个值。
+        request_id = current_request_id() or new_request_id()
 
         with request_context(request_id, copilot_session=session_id), usage_scope() as usage:
             reply = await self._run(message, session_id, start, usage)

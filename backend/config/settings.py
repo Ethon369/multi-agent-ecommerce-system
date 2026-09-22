@@ -98,13 +98,84 @@ class Settings(BaseSettings):
     # 中国无夏令时，固定 +08:00 是正确的，且不依赖 tzdata 这个传递依赖。
     feature_tz_offset_hours: int = 8
 
-    # Milvus
-    milvus_host: str = "localhost"
-    milvus_port: int = 19530
-    milvus_collection: str = "product_embeddings"
+    # ── 接入层 ──────────────────────────────────────────────────
+    #
+    # 【已删除】原先这里还有 milvus_host / milvus_port / milvus_collection
+    # 和 database_url 四项配置。删掉的理由和 harness/trace.py 里删 span() 一样：
+    # grep 生产代码 0 引用（`pymilvus` / `sqlalchemy` 全仓库都没有 import）。
+    # 留着它们的实际代价不是几行代码，而是【误导】—— 面试官看到 milvus_host
+    # 会问"向量库用的什么索引"，正确答案"其实没接"是最难看的答案。
+    # 真要做向量召回时再加，那时它会和真实的客户端代码一起进来。
 
-    # Database
-    database_url: str = "sqlite:///./ecommerce.db"
+    # 日志格式。true = 逐行 JSON（生产/采集用），false = 彩色控制台（本地读着舒服）。
+    #
+    # 这个开关存在的原因：项目此前【从未】调用 structlog.configure() ——
+    # 原来的 configure_logging() 在"删死代码"那一轮被删了（当时确实 0 引用），
+    # 结果所有日志走 structlog 默认的彩色 ConsoleRenderer，而文档里写的是
+    # "结构化 JSON 日志"。两者不符。现在真的接上了，并留一个关掉的口子。
+    log_json: bool = True
+
+    # 日志级别。DEBUG / INFO / WARNING / ERROR。
+    #
+    # 为什么它是配置项而不是硬编码 INFO：过滤级别是【全局的】，
+    # 设成 INFO 之后生产代码里那 3 处 logger.debug 就再也不输出了。
+    # 生产正要如此，但测试需要放回来 —— 否则"某个 debug 事件到底有没有发"
+    # 这类问题在测试里无法回答。tests/conftest.py 因此把它设成 DEBUG。
+    # 认不出的级别名会被兜底成 INFO，不会让服务起不来。
+    log_level: str = "INFO"
+
+    # `python main.py` 启动时是否开 uvicorn 热重载。**默认 false。**
+    #
+    # 原先 main.py 的 __main__ 里硬编码 reload=True，而它和本项目的
+    # MCP 设计是冲突的：reloader 重启时会杀掉整个子进程树，MCP 的
+    # stdio 子进程会先死，症状是静默挂起或 BrokenPipe（CLAUDE.md 陷阱 5）。
+    # 容器里更不需要热重载。所以改成显式开启，默认走安全的那一侧。
+    #
+    # 本地改代码时想要热重载：ECOM_DEV_RELOAD=true
+    dev_reload: bool = False
+
+    # API Key 鉴权。**默认 false** —— 和 MCP / 特征层同一个口径：
+    # 新增的准入控制默认不启用，保证现有链路零破坏
+    # （尤其是 eval/runner.py 走 HTTP 调服务做评测，不能因为加了鉴权就集体 401）。
+    api_key_enabled: bool = False
+    api_key: str = ""
+
+    # 免鉴权路径（逗号分隔，精确匹配）。/health 必须在里面 ——
+    # 探活被鉴权挡在门外，会让编排系统认为服务已经死了。
+    api_key_exempt_paths: str = "/health,/docs,/openapi.json,/redoc"
+
+    # CORS 允许来源（逗号分隔）。默认给的是【开发期端口】，不是 "*"。
+    #
+    # 为什么不再用 "*"：通配符在生产是不可接受的，而它恰恰是"忘了改"的
+    # 最常见形态 —— 默认值给成安全的那一侧，才不用靠人记得。
+    # 5173 = Vite dev，4173 = Vite preview；换端口时在这里追加。
+    # 需要临时放开成通配符时，显式写 ECOM_CORS_ALLOW_ORIGINS=* 即可。
+    cors_allow_origins: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:4173,http://127.0.0.1:4173"
+    )
+
+    # ── 限流 ────────────────────────────────────────────────────
+    #
+    # **默认 false**，同 api_key_enabled 的理由：新能力默认不启用，
+    # 保证现有链路零破坏（尤其 eval/runner.py 的 12 条用例是串行快速
+    # 连打的，默认开启会把它卡在 429 上，而症状看起来像"评测挂了"）。
+    #
+    # 为什么这个开关值得存在（而不是"演示项目用不上"）：
+    # 推荐接口单次约 3 秒、成本约 $0.0005（实测）。一个忘加 sleep 的
+    # for 循环能在几分钟内烧掉可观额度，而服务本身不会给出任何信号。
+    rate_limit_enabled: bool = False
+
+    # 窗口长度（秒）内允许的请求数。
+    # 默认给得很宽（60 次/分钟）—— 限流第一版的目标是拦住"失控的循环"，
+    # 不是把正常调用方卡住。真正调参要基于实测流量，而那需要真实流量。
+    rate_limit_requests: int = 60
+    rate_limit_window_s: float = 60.0
+
+    # 免限流路径（逗号分隔，精确匹配）。
+    # /health 与 /ready 必须在里面：探针被限流挡住，编排系统会认为
+    # 实例挂了并把它摘掉 —— 而它其实好好的。
+    rate_limit_exempt_paths: str = "/health,/ready,/docs,/openapi.json,/redoc"
 
     # Agent 超时（秒）——【整个 run() 的总预算】，不是单次尝试的预算。
     #
@@ -155,6 +226,36 @@ class Settings(BaseSettings):
     # 库存 Agent 还有余量走 fallback 返回 Product.stock，而不是自己先被切断。
     # 库存查询是毫秒级操作，3 秒不给响应说明进程已异常，继续等只会拖慢主链路。
     mcp_wms_timeout: float = 3.0
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """
+        把逗号分隔的来源串解析成列表。
+
+        单独留一个 `*` 的分支，而不是"原样 split 就行"：Starlette 的
+        CORSMiddleware 对 `["*"]` 和 `["*", "http://x"]` 的处理【不一样】——
+        后者会被当成一组普通来源去精确匹配，等于通配符静默失效。
+        把这两种语义在这里分开，调用方就不用知道这个区别。
+        """
+        items = [x.strip() for x in self.cors_allow_origins.split(",") if x.strip()]
+        if "*" in items:
+            return ["*"]
+        return items
+
+    @staticmethod
+    def _split_csv(value: str) -> set[str]:
+        """逗号分隔串 → 去空白的集合。鉴权与限流的免检名单共用。"""
+        return {x.strip() for x in value.split(",") if x.strip()}
+
+    @property
+    def api_key_exempt_set(self) -> set[str]:
+        """免鉴权路径集合。用 set 是因为匹配是精确匹配，不是前缀匹配。"""
+        return self._split_csv(self.api_key_exempt_paths)
+
+    @property
+    def rate_limit_exempt_set(self) -> set[str]:
+        """免限流路径集合。口径与 api_key_exempt_set 一致。"""
+        return self._split_csv(self.rate_limit_exempt_paths)
 
     model_config = {"env_file": ".env", "env_prefix": "ECOM_"}
 

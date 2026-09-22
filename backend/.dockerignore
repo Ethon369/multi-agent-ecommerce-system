@@ -1,0 +1,45 @@
+# 构建上下文排除清单。
+#
+# 加这个文件的原因：原先没有它，于是 Dockerfile 里的 `COPY . .` 会把下面
+# 全部东西搬进镜像 —— 最要命的是 .venv/（宿主机上装了几十个包，几百 MB）
+# 和 .env（里面是【真实 API Key】）。
+
+# 虚拟环境：宿主机专用，容器里用不上；而且体积巨大。
+.venv/
+venv/
+
+# 真实配置：绝不能进镜像。
+#   - 密钥会永久留在镜像的层里，即使后续 RUN rm 也删不掉（层是不可变的），
+#     把镜像推到哪里就等于把 key 推到哪里。
+#   - 容器里的配置应当由 docker compose 的 env_file / environment 在【运行时】注入。
+#   - 仓库里提交的是 .env.example（占位值），那是给镜像就够用了。
+.env
+
+# Python 产物
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 测试与评测产物：运行镜像不需要它们。
+# （要在容器里跑测试时，用 `docker compose run --rm api pytest` 挂载源码即可。）
+tests/
+eval_results/
+
+# 版本控制与编辑器
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# 文档：不进运行镜像，避免镜像里出现和代码不同步的说明。
+# 注意 docs/ 在上一级目录（构建上下文是 backend/），这里写不写都不影响运行；
+# .dockerignore 的路径是相对构建上下文的，写在这里只是明确意图。
+docs/
+*.md
+
+# Docker 自身
+Dockerfile
+.dockerignore
+docker-compose.yml

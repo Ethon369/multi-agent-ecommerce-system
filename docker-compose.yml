@@ -1,60 +1,77 @@
-version: "3.8"
+# 说明（2026-09-22 重写）
+#
+# 这个文件原来是【跑不起来的】，两处：
+#   1. build.context 写的是 ./python，但该目录早已重命名为 ./backend
+#      —— compose 会在构建第一步就失败，且报的是"路径不存在"，
+#         看起来像 Docker 的问题而不是配置的问题。
+#   2. 它声明了 milvus 与 mysql 两个服务，而代码里【一行都没用】
+#      （pymilvus / sqlalchemy 全仓库 0 import，配置项也已删除）。
+#      多起两个容器 = 演示时多两个失败点 + 白等 1-2 分钟启动，
+#      换来的只是"看起来技术栈很全"。
+#
+# 现在只保留 api + redis 两个服务。
+#
+# 为什么保留 redis：它是本项目【真的实现了、且可开启】的可选依赖
+# （services/feature_store.py，435 行，有 17 条测试）。开关默认 false，
+# 所以默认起来它只是空转 —— 想试实时特征层时：
+#     docker compose exec api python scripts/seed_behavior.py --reset
+#     并在 .env 里设 ECOM_FEATURE_STORE_ENABLED=true
+#
+# 注意：【不要】写 `version: "3.8"`。Compose V2 已弃用该字段并会打印警告，
+# 而它实际不产生任何作用（现代 Compose 按文件内容自动判断）。
 
 services:
   # Python API Server
   api:
     build:
-      context: ./python
+      context: ./backend
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+
+    # 配置注入只走一层：env_file 直接读你已填好的 backend/.env。
+    # required: false 是刻意的：没有 .env 时不要因为一个"文件不存在"
+    # 就让整个 compose 失败，给人一个能看懂的报错顺序。
+    # ⚠️ .env 已被 .dockerignore 排除，所以它【不会】被打进镜像 ——
+    #    镜像层是不可变的，打进层里的密钥事后删不掉。
+    env_file:
+      - path: ./backend/.env
+        required: false
+
+    # ⚠️ 这里【只】放容器内必须不同的那一项。
+    #
+    # 为什么不顺手把 LLM 配置也写在这里（哪怕用 ${VAR:-默认值} 形式）：
+    # compose 里 environment 的优先级【高于】env_file ——
+    # 写成 `ECOM_LLM_MODEL=${ECOM_LLM_MODEL:-deepseek-flash}` 时，
+    # 如果 shell 里没这个变量，它就会展开成空/默认值，
+    # 把 .env 里的真实配置**覆盖掉**。
+    # 这个坑是 `docker compose config` 里看到 `ECOM_LLM_API_KEY: ""`
+    # 才发现的 —— 表面上 compose 文件"配得很全"，实际把 API Key 抹成了空串。
+    #
+    # 结论：LLM 相关的配置一律留给 .env，这里不重复声明。
     environment:
-      - ECOM_LLM_API_KEY=${ECOM_LLM_API_KEY:-your_api_key_here}
-      - ECOM_LLM_BASE_URL=${ECOM_LLM_BASE_URL:-https://api.minimax.chat/v1}
-      - ECOM_LLM_MODEL=${ECOM_LLM_MODEL:-MiniMax-M1}
+      # 唯一必须覆盖的：宿主机上是 127.0.0.1，容器里必须用服务名，
+      # 否则连不上自己 —— 而症状是静默降级而不是报错
+      # （见 settings.py 里关于 fallback 的注释）。
       - ECOM_REDIS_URL=redis://redis:6379/0
-      - ECOM_MILVUS_HOST=milvus
-      - ECOM_DATABASE_URL=sqlite:///./ecommerce.db
+      # CORS 默认只放行开发期端口。容器演示时如果前端不在宿主机 5173，
+      # 在这里追加来源，而不是把后端改回通配符。
+      # - ECOM_CORS_ALLOW_ORIGINS=http://localhost:5173
+
     depends_on:
       - redis
     restart: unless-stopped
 
-  # Redis - Feature Store
+  # Redis - 实时特征存储（可选依赖，功能默认关闭）
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # 只绑宿主机回环：这个 Redis 不需要对局域网暴露。
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
     restart: unless-stopped
 
-  # Milvus - Vector Database (standalone mode)
-  milvus:
-    image: milvusdb/milvus:v2.4-latest
-    ports:
-      - "19530:19530"
-      - "9091:9091"
-    environment:
-      - ETCD_USE_EMBED=true
-      - COMMON_STORAGETYPE=local
-    volumes:
-      - milvus_data:/var/lib/milvus
-    restart: unless-stopped
-
-  # MySQL - Business Data
-  mysql:
-    image: mysql:8.0
-    ports:
-      - "3306:3306"
-    environment:
-      - MYSQL_ROOT_PASSWORD=ecommerce123
-      - MYSQL_DATABASE=ecommerce
-    volumes:
-      - mysql_data:/var/lib/mysql
-    restart: unless-stopped
-
 volumes:
   redis_data:
-  milvus_data:
-  mysql_data:
